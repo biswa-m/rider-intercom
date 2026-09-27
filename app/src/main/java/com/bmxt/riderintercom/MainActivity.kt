@@ -44,6 +44,10 @@ class MainActivity : ComponentActivity() {
             val routingError by
                 viewModel.routingError.collectAsState()
 
+            val localIpv4Addresses = remember {
+                viewModel.localIpv4Addresses
+            }
+
             LaunchedEffect(Unit) {
                 viewModel.refreshAudioDevices()
             }
@@ -77,6 +81,10 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+            var pendingIntercomPeerHost by remember {
+                mutableStateOf<String?>(null)
+            }
+
             val notificationPermissionLauncher =
                 rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
@@ -86,7 +94,10 @@ class MainActivity : ComponentActivity() {
                     // Audio can technically run without notification permission,
                     // but ask first so the foreground-service notification remains
                     // visible as the rider requested.
-                    viewModel.startAudio()
+                    pendingIntercomPeerHost?.let { peerHost ->
+                        pendingIntercomPeerHost = null
+                        viewModel.startIntercom(peerHost)
+                    } ?: viewModel.startAudio()
                 }
 
             val microphonePermissionLauncher =
@@ -96,6 +107,7 @@ class MainActivity : ComponentActivity() {
                     hasMicrophonePermission = granted
 
                     if (granted) {
+                        val pendingPeer = pendingIntercomPeerHost
                         if (
                             Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
                             !hasNotificationPermission
@@ -104,10 +116,15 @@ class MainActivity : ComponentActivity() {
                                 Manifest.permission.POST_NOTIFICATIONS
                             )
                         } else {
-                            viewModel.startAudio()
+                            pendingIntercomPeerHost = null
+                            pendingPeer?.let(viewModel::startIntercom)
+                                ?: viewModel.startAudio()
                         }
+                    } else {
+                        pendingIntercomPeerHost = null
                     }
                 }
+
 
             val bluetoothPermissionLauncher =
                 rememberLauncherForActivityResult(
@@ -170,8 +187,32 @@ class MainActivity : ComponentActivity() {
                         onClearCommunicationDevice = {
                             viewModel.clearCommunicationDevice()
                         },
+                        localIpv4Addresses = localIpv4Addresses,
+                        defaultNetworkPort = viewModel.defaultNetworkPort,
                         onStart = {
                             startAudioWithPermissions()
+                        },
+                        onStartIntercom = { peerHost ->
+                            if (peerHost.isNotBlank()) {
+                                pendingIntercomPeerHost = peerHost.trim()
+
+                                if (!hasMicrophonePermission) {
+                                    microphonePermissionLauncher.launch(
+                                        Manifest.permission.RECORD_AUDIO
+                                    )
+                                } else if (
+                                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                                    !hasNotificationPermission
+                                ) {
+                                    notificationPermissionLauncher.launch(
+                                        Manifest.permission.POST_NOTIFICATIONS
+                                    )
+                                } else {
+                                    val pendingPeer = pendingIntercomPeerHost
+                                    pendingIntercomPeerHost = null
+                                    pendingPeer?.let(viewModel::startIntercom)
+                                }
+                            }
                         },
                         onStop = {
                             viewModel.stopAudio()

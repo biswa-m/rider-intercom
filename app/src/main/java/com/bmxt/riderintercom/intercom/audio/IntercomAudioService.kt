@@ -43,6 +43,9 @@ class IntercomAudioService : Service() {
         const val EXTRA_COMMUNICATION_DEVICE_ID =
             "communication_device_id"
         const val NO_DEVICE_ID = -1
+        const val EXTRA_PEER_HOST = "peer_host"
+        const val EXTRA_LOCAL_PORT = "local_port"
+        const val EXTRA_PEER_PORT = "peer_port"
 
         private val _running = MutableStateFlow(false)
         val runningState: StateFlow<Boolean> = _running.asStateFlow()
@@ -59,11 +62,17 @@ class IntercomAudioService : Service() {
 
         fun start(
             context: Context,
-            communicationDeviceId: Int = NO_DEVICE_ID
+            communicationDeviceId: Int = NO_DEVICE_ID,
+            peerHost: String? = null,
+            localPort: Int = NetworkAudioManager.DEFAULT_PORT,
+            peerPort: Int = NetworkAudioManager.DEFAULT_PORT
         ) {
             val intent = Intent(context, IntercomAudioService::class.java).apply {
                 action = ACTION_START
                 putExtra(EXTRA_COMMUNICATION_DEVICE_ID, communicationDeviceId)
+                peerHost?.let { putExtra(EXTRA_PEER_HOST, it) }
+                putExtra(EXTRA_LOCAL_PORT, localPort)
+                putExtra(EXTRA_PEER_PORT, peerPort)
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -83,6 +92,7 @@ class IntercomAudioService : Service() {
 
     private lateinit var audioDeviceManager: AudioDeviceManager
     private var audioLoopback: AudioLoopbackManager? = null
+    private var networkAudio: NetworkAudioManager? = null
     private var voiceStateJob: kotlinx.coroutines.Job? = null
 
     override fun onCreate() {
@@ -109,7 +119,22 @@ class IntercomAudioService : Service() {
                         NO_DEVICE_ID
                     ) ?: NO_DEVICE_ID
 
-                startAudio(communicationDeviceId)
+                val peerHost = intent?.getStringExtra(EXTRA_PEER_HOST)
+                val localPort = intent?.getIntExtra(
+                    EXTRA_LOCAL_PORT,
+                    NetworkAudioManager.DEFAULT_PORT
+                ) ?: NetworkAudioManager.DEFAULT_PORT
+                val peerPort = intent?.getIntExtra(
+                    EXTRA_PEER_PORT,
+                    NetworkAudioManager.DEFAULT_PORT
+                ) ?: NetworkAudioManager.DEFAULT_PORT
+
+                startAudio(
+                    communicationDeviceId = communicationDeviceId,
+                    peerHost = peerHost,
+                    localPort = localPort,
+                    peerPort = peerPort
+                )
             }
         }
 
@@ -117,14 +142,21 @@ class IntercomAudioService : Service() {
         return START_NOT_STICKY
     }
 
-    private fun startAudio(communicationDeviceId: Int) {
+    private fun startAudio(
+        communicationDeviceId: Int,
+        peerHost: String?,
+        localPort: Int,
+        peerPort: Int
+    ) {
         if (isRunning) return
 
         try {
             // Must enter foreground immediately for a microphone FGS.
             startForeground(
                 NOTIFICATION_ID,
-                buildNotification()
+                buildNotification(
+                    peerHost = peerHost
+                )
             )
 
             audioDeviceManager.beginCommunicationMode()
@@ -147,25 +179,62 @@ class IntercomAudioService : Service() {
                 }
             }
 
-            val loopback = AudioLoopbackManager()
-            if (!loopback.start(serviceScope)) {
-                Log.e(TAG, "Unable to start audio loopback")
-                loopback.stop()
-                cleanupAudioRouting()
-                stopForegroundCompat()
-                stopSelf()
-                return
-            }
-
-            audioLoopback = loopback
             voiceStateJob?.cancel()
-            voiceStateJob = serviceScope.launch {
-                loopback.voiceDetected.collect { detected ->
-                    _voiceDetected.value = detected
+            voiceStateJob = null
+
+            if (!peerHost.isNullOrBlank()) {
+                val network = NetworkAudioManager()
+
+                if (!network.start(
+                        scope = serviceScope,
+                        peerHost = peerHost,
+                        localPort = localPort,
+                        peerPort = peerPort
+                    )
+                ) {
+                    Log.e(TAG, "Unable to start network intercom audio")
+                    network.stop()
+                    cleanupAudioRouting()
+                    stopForegroundCompat()
+                    stopSelf()
+                    return
+                }
+
+                networkAudio = network
+                voiceStateJob = serviceScope.launch {
+                    network.voiceDetected.collect { detected ->
+                        _voiceDetected.value = detected
+                    }
+                }
+            } else {
+                val loopback = AudioLoopbackManager()
+
+                if (!loopback.start(serviceScope)) {
+                    Log.e(TAG, "Unable to start audio loopback")
+                    loopback.stop()
+                    cleanupAudioRouting()
+                    stopForegroundCompat()
+                    stopSelf()
+                    return
+                }
+
+                audioLoopback = loopback
+                voiceStateJob = serviceScope.launch {
+                    loopback.voiceDetected.collect { detected ->
+                        _voiceDetected.value = detected
+                    }
                 }
             }
+
             setRunning(true)
-            Log.i(TAG, "Foreground intercom audio started")
+            Log.i(
+                TAG,
+                if (!peerHost.isNullOrBlank()) {
+                    "Foreground network intercom started: $peerHost:$peerPort"
+                } else {
+                    "Foreground local audio test started"
+                }
+            )
         } catch (e: SecurityException) {
             Log.e(TAG, "Missing microphone or Bluetooth permission", e)
             cleanupAudioRouting()
@@ -184,6 +253,9 @@ class IntercomAudioService : Service() {
         voiceStateJob = null
         audioLoopback?.stop()
         audioLoopback = null
+
+        networkAudio?.stop()
+        networkAudio = null
 
         _voiceDetected.value = false
         cleanupAudioRouting()
@@ -243,7 +315,7 @@ class IntercomAudioService : Service() {
             .createNotificationChannel(channel)
     }
 
-    private fun buildNotification(): Notification {
+    private fun buildNotification(peerHost: String?): Notification {
         val contentIntent = PendingIntent.getActivity(
             this,
             0,
@@ -266,7 +338,7 @@ class IntercomAudioService : Service() {
         return builder
             .setSmallIcon(android.R.drawable.ic_btn_speak_now)
             .setContentTitle(getString(R.string.app_name))
-            .setContentText("Intercom audio is active")
+            .setContentText(peerHost?.let { "Intercom active • peer $it" } ?: "Audio test is active")
             .setContentIntent(contentIntent)
             .setOngoing(true)
             .setOnlyAlertOnce(true)

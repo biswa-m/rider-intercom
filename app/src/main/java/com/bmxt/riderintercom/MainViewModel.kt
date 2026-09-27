@@ -5,6 +5,8 @@ import android.media.AudioDeviceInfo
 import androidx.lifecycle.AndroidViewModel
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
 import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
+import com.bmxt.riderintercom.intercom.audio.NetworkAudioManager
+import com.bmxt.riderintercom.intercom.audio.NetworkUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -18,6 +20,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val voiceDetected: StateFlow<Boolean> =
         IntercomAudioService.voiceDetectedState
+
+    val localIpv4Addresses: List<String>
+        get() = NetworkUtils.getLocalIpv4Addresses()
+
+    val defaultNetworkPort: Int = NetworkAudioManager.DEFAULT_PORT
 
     private val _inputDevices =
         MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
@@ -97,8 +104,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
         try {
             IntercomAudioService.start(
-                getApplication(),
-                deviceId
+                context = getApplication(),
+                communicationDeviceId = deviceId
             )
         } catch (e: SecurityException) {
             _routingError.value =
@@ -106,6 +113,34 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         } catch (e: Exception) {
             _routingError.value =
                 e.message ?: "Unable to start intercom audio service."
+        }
+    }
+
+    fun startIntercom(peerHost: String) {
+        refreshAudioDevices()
+
+        val deviceId =
+            audioDeviceManager
+                .getCurrentCommunicationDevice()
+                ?.id
+                ?: IntercomAudioService.NO_DEVICE_ID
+
+        _routingError.value = null
+
+        try {
+            IntercomAudioService.start(
+                context = getApplication(),
+                communicationDeviceId = deviceId,
+                peerHost = peerHost.trim(),
+                localPort = NetworkAudioManager.DEFAULT_PORT,
+                peerPort = NetworkAudioManager.DEFAULT_PORT
+            )
+        } catch (e: SecurityException) {
+            _routingError.value =
+                "Microphone or Bluetooth permission is required to start intercom."
+        } catch (e: Exception) {
+            _routingError.value =
+                e.message ?: "Unable to start network intercom."
         }
     }
 

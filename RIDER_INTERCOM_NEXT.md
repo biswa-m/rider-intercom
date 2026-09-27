@@ -1,37 +1,56 @@
-# Rider Intercom - Next milestone
+# Rider Intercom - networking milestone
 
-This update adds the first VAD (voice activity detection) layer without changing the current audio loopback behavior.
+This update adds the first two-phone networking path.
 
-## VAD v1
-
-- 16 kHz mono PCM
-- 20 ms analysis frames
-- 500 ms startup noise-floor calibration
-- adaptive energy threshold
-- 240 ms speech hangover to prevent choppy speech detection
-- no external/native dependency
-- VAD is observational only in this milestone; it does **not** mute or alter the loopback audio
-
-The UI shows:
-
-- `Speech detected` when VAD considers the microphone active
-- `Silence / listening` otherwise
-
-## Background lifecycle remains
+## Current background lifecycle
 
 - screen off / locked: audio continues
 - app in background: audio continues
 - swipe app task away from Recents: service stops
 - service uses `START_NOT_STICKY`
 
-## Test
+## Two-phone Wi-Fi test
 
-1. Connect V8.
-2. Select V8 Bluetooth SCO.
-3. Start audio.
-4. Wait about 1 second without speaking so the VAD can calibrate ambient noise.
-5. Speak normally and watch `Voice activity: Speech detected`.
-6. Stop speaking and confirm it returns to `Silence / listening` after a short delay.
-7. Lock the phone and confirm the audio service remains active.
+The first network milestone intentionally uses **uncompressed 16 kHz mono PCM over UDP**.
 
-The audio path is still loopback at this stage. The next networking milestone will use the same captured PCM frames and VAD decision to decide when voice packets should be transmitted.
+This is not the final network codec. It exists to validate:
+
+- two-phone connectivity
+- microphone capture
+- VAD-gated transmission
+- UDP packet flow
+- remote playback through Bluetooth SCO
+- basic end-to-end latency
+
+### Packet flow
+
+Phone A:
+
+`Mic -> 20 ms PCM -> VAD -> UDP -> Phone B`
+
+Phone B:
+
+`UDP -> PCM -> AudioTrack -> Bluetooth SCO`
+
+Both phones transmit and receive at the same time.
+
+## Test setup
+
+1. Connect both phones to the same Wi-Fi network, or connect both through a suitable phone hotspot.
+2. On each phone, open Rider Intercom.
+3. Note each phone's displayed IPv4 address.
+4. Connect the V8 headset and select **Bluetooth SCO**.
+5. On Phone A, enter Phone B's IPv4 address and start **Two-Phone Intercom**.
+6. On Phone B, enter Phone A's IPv4 address and start **Two-Phone Intercom**.
+7. Speak on one phone and verify the other phone plays the voice through V8.
+8. Repeat in the opposite direction.
+9. Test with the screen locked.
+10. Test by swiping the app away from Recents.
+
+## Why raw PCM first
+
+Raw PCM creates a large amount of traffic (about 256 kbps for 16 kHz mono 16-bit audio), so it is not appropriate for the final motorcycle intercom. Once transport is proven, replace the packet payload with Opus to reduce bandwidth and battery usage.
+
+## Next milestone
+
+Replace `PcmVoicePacket` with an Opus packet codec while keeping the UDP transport and audio/VAD boundaries intact.
