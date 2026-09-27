@@ -3,37 +3,43 @@ package com.bmxt.riderintercom
 import android.app.Application
 import android.media.AudioDeviceInfo
 import androidx.lifecycle.AndroidViewModel
-import androidx.lifecycle.viewModelScope
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
-import com.bmxt.riderintercom.intercom.audio.AudioLoopbackManager
+import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val audioLoopback = AudioLoopbackManager()
     private val audioDeviceManager = AudioDeviceManager(application)
 
-    private val _audioRunning = MutableStateFlow(false)
-    val audioRunning: StateFlow<Boolean> = _audioRunning.asStateFlow()
+    val audioRunning: StateFlow<Boolean> =
+        IntercomAudioService.runningState
 
-    private val _inputDevices = MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
-    val inputDevices: StateFlow<List<AudioDeviceInfo>> = _inputDevices.asStateFlow()
+    private val _inputDevices =
+        MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
+    val inputDevices: StateFlow<List<AudioDeviceInfo>> =
+        _inputDevices.asStateFlow()
 
-    private val _outputDevices = MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
-    val outputDevices: StateFlow<List<AudioDeviceInfo>> = _outputDevices.asStateFlow()
+    private val _outputDevices =
+        MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
+    val outputDevices: StateFlow<List<AudioDeviceInfo>> =
+        _outputDevices.asStateFlow()
 
-    private val _communicationDevices = MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
+    private val _communicationDevices =
+        MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
     val communicationDevices: StateFlow<List<AudioDeviceInfo>> =
         _communicationDevices.asStateFlow()
 
-    private val _currentCommunicationDevice = MutableStateFlow<AudioDeviceInfo?>(null)
+    private val _currentCommunicationDevice =
+        MutableStateFlow<AudioDeviceInfo?>(null)
     val currentCommunicationDevice: StateFlow<AudioDeviceInfo?> =
         _currentCommunicationDevice.asStateFlow()
 
-    private val _routingError = MutableStateFlow<String?>(null)
-    val routingError: StateFlow<String?> = _routingError.asStateFlow()
+    private val _routingError =
+        MutableStateFlow<String?>(null)
+    val routingError: StateFlow<String?> =
+        _routingError.asStateFlow()
 
     fun refreshAudioDevices() {
         _inputDevices.value = audioDeviceManager.getInputDevices()
@@ -53,7 +59,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (selected) {
                 refreshAudioDevices()
             } else {
-                _routingError.value = "Android did not accept this audio route."
+                _routingError.value =
+                    "Android did not accept this audio route."
             }
 
             selected
@@ -76,19 +83,31 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startAudio() {
         refreshAudioDevices()
-        audioDeviceManager.beginCommunicationMode()
 
-        val started = audioLoopback.start(viewModelScope)
-        if (started) {
-            _audioRunning.value = true
+        val deviceId =
+            audioDeviceManager
+                .getCurrentCommunicationDevice()
+                ?.id
+                ?: IntercomAudioService.NO_DEVICE_ID
+
+        _routingError.value = null
+
+        try {
+            IntercomAudioService.start(
+                getApplication(),
+                deviceId
+            )
+        } catch (e: SecurityException) {
+            _routingError.value =
+                "Microphone or Bluetooth permission is required to start intercom."
+        } catch (e: Exception) {
+            _routingError.value =
+                e.message ?: "Unable to start intercom audio service."
         }
     }
 
     fun stopAudio() {
-        audioLoopback.stop()
-        audioDeviceManager.clearCommunicationDevice()
-        audioDeviceManager.endCommunicationMode()
-        _audioRunning.value = false
+        IntercomAudioService.stop(getApplication())
         refreshAudioDevices()
     }
 
@@ -102,9 +121,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         audioDeviceManager.describeDevice(device)
 
     override fun onCleared() {
-        audioLoopback.stop()
-        audioDeviceManager.clearCommunicationDevice()
-        audioDeviceManager.endCommunicationMode()
+        // The foreground service owns the audio lifecycle.
+        // Do not stop audio when the Activity/ViewModel is recreated.
         super.onCleared()
     }
 }

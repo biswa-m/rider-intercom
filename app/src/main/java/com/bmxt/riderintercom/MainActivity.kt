@@ -29,13 +29,18 @@ class MainActivity : ComponentActivity() {
         setContent {
             val viewModel: MainViewModel = viewModel()
 
-            val audioRunning by viewModel.audioRunning.collectAsState()
-            val inputDevices by viewModel.inputDevices.collectAsState()
-            val outputDevices by viewModel.outputDevices.collectAsState()
-            val communicationDevices by viewModel.communicationDevices.collectAsState()
+            val audioRunning by
+                viewModel.audioRunning.collectAsState()
+            val inputDevices by
+                viewModel.inputDevices.collectAsState()
+            val outputDevices by
+                viewModel.outputDevices.collectAsState()
+            val communicationDevices by
+                viewModel.communicationDevices.collectAsState()
             val currentCommunicationDevice by
                 viewModel.currentCommunicationDevice.collectAsState()
-            val routingError by viewModel.routingError.collectAsState()
+            val routingError by
+                viewModel.routingError.collectAsState()
 
             LaunchedEffect(Unit) {
                 viewModel.refreshAudioDevices()
@@ -60,13 +65,45 @@ class MainActivity : ComponentActivity() {
                 )
             }
 
+            var hasNotificationPermission by remember {
+                mutableStateOf(
+                    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+                        ContextCompat.checkSelfPermission(
+                            this,
+                            Manifest.permission.POST_NOTIFICATIONS
+                        ) == PackageManager.PERMISSION_GRANTED
+                )
+            }
+
+            val notificationPermissionLauncher =
+                rememberLauncherForActivityResult(
+                    ActivityResultContracts.RequestPermission()
+                ) { granted ->
+                    hasNotificationPermission = granted
+
+                    // Audio can technically run without notification permission,
+                    // but ask first so the foreground-service notification remains
+                    // visible as the rider requested.
+                    viewModel.startAudio()
+                }
+
             val microphonePermissionLauncher =
                 rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { granted ->
                     hasMicrophonePermission = granted
+
                     if (granted) {
-                        viewModel.startAudio()
+                        if (
+                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                            !hasNotificationPermission
+                        ) {
+                            notificationPermissionLauncher.launch(
+                                Manifest.permission.POST_NOTIFICATIONS
+                            )
+                        } else {
+                            viewModel.startAudio()
+                        }
                     }
                 }
 
@@ -79,6 +116,27 @@ class MainActivity : ComponentActivity() {
                         viewModel.refreshAudioDevices()
                     }
                 }
+
+            fun startAudioWithPermissions() {
+                if (!hasMicrophonePermission) {
+                    microphonePermissionLauncher.launch(
+                        Manifest.permission.RECORD_AUDIO
+                    )
+                    return
+                }
+
+                if (
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+                    !hasNotificationPermission
+                ) {
+                    notificationPermissionLauncher.launch(
+                        Manifest.permission.POST_NOTIFICATIONS
+                    )
+                    return
+                }
+
+                viewModel.startAudio()
+            }
 
             MaterialTheme {
                 Surface {
@@ -110,13 +168,7 @@ class MainActivity : ComponentActivity() {
                             viewModel.clearCommunicationDevice()
                         },
                         onStart = {
-                            if (!hasMicrophonePermission) {
-                                microphonePermissionLauncher.launch(
-                                    Manifest.permission.RECORD_AUDIO
-                                )
-                            } else {
-                                viewModel.startAudio()
-                            }
+                            startAudioWithPermissions()
                         },
                         onStop = {
                             viewModel.stopAudio()
