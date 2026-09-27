@@ -99,6 +99,9 @@ fun AudioTestScreen(
             Text("Malformed UDP: ${debugState.malformedPackets}")
             Text("Last TX payload: ${debugState.lastSentPayloadBytes} B")
             Text("Last RX payload: ${debugState.lastReceivedPayloadBytes} B, seq=${debugState.lastReceivedSequence}")
+            Text("Jitter buffer: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets} (target ${debugState.jitterTargetPackets})")
+            Text("Estimated lost: ${debugState.estimatedLostPackets}   Late: ${debugState.latePackets}   Overflow drop: ${debugState.overflowDroppedPackets}")
+            Text("Jitter resyncs: ${debugState.jitterResyncs}   Playback underruns: ${debugState.playbackUnderruns}")
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")
             Text("AudioRecord: ${debugState.audioRecordState}   AudioTrack: ${debugState.audioTrackState}")
@@ -115,7 +118,7 @@ fun AudioTestScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             Text("Two-phone Wi-Fi test", style = MaterialTheme.typography.titleMedium)
-            Text("16 kHz mono PCM → VAD → Opus → UDP")
+            Text("16 kHz mono PCM → VAD → Opus → UDP → 40 ms jitter buffer → Opus → AudioTrack")
             Text("UDP port: $defaultNetworkPort")
             if (localIpv4Addresses.isEmpty()) {
                 Text("Local IPv4: not available")

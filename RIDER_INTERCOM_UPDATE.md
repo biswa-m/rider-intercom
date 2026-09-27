@@ -1,38 +1,31 @@
-# Rider Intercom — foreground service update
+# Rider Intercom — Opus/Jitter update
 
-This archive contains the complete application source/configuration from the uploaded Rider Intercom project, plus the foreground-service implementation.
+This version keeps the existing foreground-service and Android 11 Bluetooth SCO behavior and changes only the network-audio timing path.
 
-## Runtime behavior
+## Network playback
 
-- Screen off / phone locked: intercom audio continues.
-- Activity in background: intercom audio continues.
-- User swipes the app task away from Recents: `IntercomAudioService.onTaskRemoved()` stops the audio service and removes the ongoing notification.
-- Service uses `START_NOT_STICKY`, so Android is not asked to recreate the intercom after the service is terminated.
-- Force Stop is expected to stop the service.
+- UDP receive callback only validates/queues packets.
+- Added `OpusJitterBuffer` with a 2-packet (40 ms) target and 6-packet maximum.
+- Added short reorder/loss wait (20 ms).
+- Large sequence jumps are treated as VAD silence gaps and resynchronized instead of being counted as hundreds of lost packets.
+- Opus decoding and `AudioTrack.write()` run on a dedicated playback coroutine.
+- Playback uses a 20 ms cadence without an extra fixed 20 ms delay after `AudioTrack.write()`.
+- Playback underruns/loss/late/overflow/resync counters are exposed in diagnostics.
 
-## Foreground notification
+## VAD
 
-- Uses an ongoing low-importance notification while intercom audio is active.
-- Requests `POST_NOTIFICATIONS` on Android 13+ when the user starts the intercom.
-- The notification opens the Rider Intercom Activity when tapped.
-- Audio is not blocked if the user declines notification permission; Android may then hide the notification from the normal notification drawer.
+- Existing energy/RMS VAD is retained.
+- Added 100 ms pre-roll so the start of a word is less likely to be clipped.
+- Silence is still not transmitted as a normal Opus voice packet.
 
-## Project replacement
+## Noise reduction
 
-The archive is intended to be extracted over the existing project.
+No explicit `NoiseSuppressor`, `AcousticEchoCanceler`, or `AutomaticGainControl` was added in this step. Capture remains `VOICE_COMMUNICATION`, so device/vendor audio processing may still be applied by Android.
 
-The uploaded source archive did not contain these existing Git/tracked files:
-- `app/.gitignore`
-- `app/proguard-rules.pro`
-- `gradle/wrapper/gradle-wrapper.jar`
-- `gradle/wrapper/gradle-wrapper.properties`
-- root `gradlew` / `gradlew.bat` (if present)
 
-They are therefore not fabricated or overwritten. Keep those existing files from your project when replacing the source.
+## Latency-focused behavior
 
-## Main files changed
-
-- `app/src/main/AndroidManifest.xml`
-- `app/src/main/java/com/bmxt/riderintercom/MainActivity.kt`
-- `app/src/main/java/com/bmxt/riderintercom/MainViewModel.kt`
-- `app/src/main/java/com/bmxt/riderintercom/intercom/audio/IntercomAudioService.kt`
+- Playback uses a dedicated coroutine, so UDP reception is never blocked by `AudioTrack.write()`.
+- Small sequence gaps are waited on briefly and then represented by one 20 ms silent frame.
+- Large sequence jumps are treated as VAD silence gaps and resynchronized.
+- Jitter target is 40 ms to avoid adding an unnecessarily large fixed delay.
