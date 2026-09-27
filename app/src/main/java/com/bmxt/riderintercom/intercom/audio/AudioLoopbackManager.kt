@@ -1,13 +1,11 @@
 package com.bmxt.riderintercom.intercom.audio
 
-import android.Manifest
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.AudioTrack
 import android.media.MediaRecorder
 import android.media.AudioAttributes
 import android.util.Log
-import androidx.annotation.RequiresPermission
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
