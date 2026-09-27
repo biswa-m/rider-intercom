@@ -29,6 +29,8 @@ data class AudioDebugState(
     val lastReceivedSequence: Int = -1,
     val audioRecordState: String = "Unknown",
     val audioTrackState: String = "Unknown",
+    val playbackSampleRate: Int = 0,
+    val playbackChannelCount: Int = 0,
     val opusEncoderName: String = "Not started",
     val opusDecoderName: String = "Not started",
     val lastError: String? = null

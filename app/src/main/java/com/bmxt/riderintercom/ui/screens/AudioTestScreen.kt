@@ -102,6 +102,7 @@ fun AudioTestScreen(
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")
             Text("AudioRecord: ${debugState.audioRecordState}   AudioTrack: ${debugState.audioTrackState}")
+            Text("Playback format: ${debugState.playbackSampleRate} Hz / ${debugState.playbackChannelCount} ch")
             Text("Opus encoder: ${debugState.opusEncoderName}")
             Text("Opus decoder: ${debugState.opusDecoderName}")
             debugState.lastError?.let {
