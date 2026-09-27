@@ -45,8 +45,8 @@ class NetworkAudioManager(
         private const val JITTER_TARGET_PACKETS = 2
         private const val JITTER_MAX_PACKETS = 6
         private const val PRE_ROLL_FRAMES = 5 // 100 ms
-        private const val DIRECT_RX_QUEUE_MAX = 6
-        private const val DECODED_PCM_QUEUE_MAX = 4
+        private const val DIRECT_RX_QUEUE_MAX = 20
+        private const val DECODED_PCM_QUEUE_MAX = 6
         private const val PLAYBACK_POLL_MS = 2L
         private const val PLAYBACK_WAIT_MS = 3L
     }

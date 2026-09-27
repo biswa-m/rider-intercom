@@ -358,59 +358,72 @@ class OpusDecoder {
         val decoder = codec
             ?: error("Opus decoder is not started")
 
-        val inputIndex =
-            decoder.dequeueInputBuffer(
-                DEQUEUE_TIMEOUT_US
-            )
+        /*
+         * IMPORTANT:
+         * Do not wait 20 ms for MediaCodec input/output on every packet.
+         *
+         * The previous implementation could spend up to ~20 ms waiting for
+         * an output buffer for each 20 ms packet. That made the decoder loop
+         * slower than the network receive rate and caused the direct RX queue
+         * to overflow.
+         *
+         * We now use non-blocking MediaCodec polling. A packet that has not
+         * produced output yet remains inside MediaCodec and will be drained by
+         * the next decode call.
+         */
+        val frames = ArrayList<DecodedOpusAudio>(2)
 
-        if (inputIndex < 0) return emptyList()
+        // First drain anything already produced by the codec.
+        drainAvailableOutput(decoder, frames)
 
-        val input =
-            decoder.getInputBuffer(inputIndex)
-                ?: return emptyList()
+        val inputIndex = decoder.dequeueInputBuffer(0L)
+        if (inputIndex >= 0) {
+            val input = decoder.getInputBuffer(inputIndex)
+            if (input != null) {
+                input.clear()
+                input.put(opusData)
 
-        input.clear()
-        input.put(opusData)
+                decoder.queueInputBuffer(
+                    inputIndex,
+                    0,
+                    opusData.size,
+                    System.nanoTime() / 1_000L,
+                    0
+                )
 
-        decoder.queueInputBuffer(
-            inputIndex,
-            0,
-            opusData.size,
-            System.nanoTime() / 1_000L,
-            0
-        )
+                // The newly queued packet may already be ready.
+                drainAvailableOutput(decoder, frames)
+            }
+        }
 
-        val frames =
-            ArrayList<DecodedOpusAudio>(1)
+        return frames
+    }
 
+    private fun drainAvailableOutput(
+        decoder: MediaCodec,
+        frames: MutableList<DecodedOpusAudio>
+    ) {
         val info = MediaCodec.BufferInfo()
-        val deadlineNs =
-            System.nanoTime() +
-                DEQUEUE_TIMEOUT_US * 1_000L
 
-        while (System.nanoTime() < deadlineNs) {
+        // A single Opus packet should normally produce one 20 ms PCM frame.
+        // Keep a small hard limit so a codec malfunction cannot monopolize
+        // the decoder thread indefinitely.
+        repeat(8) {
             when (
-                val index =
-                    decoder.dequeueOutputBuffer(
-                        info,
-                        DEQUEUE_TIMEOUT_US
-                    )
+                val index = decoder.dequeueOutputBuffer(info, 0L)
             ) {
-                MediaCodec.INFO_TRY_AGAIN_LATER -> Unit
+                MediaCodec.INFO_TRY_AGAIN_LATER -> return
 
                 MediaCodec.INFO_OUTPUT_FORMAT_CHANGED -> {
-                    updateOutputFormat(
-                        decoder.outputFormat
-                    )
+                    updateOutputFormat(decoder.outputFormat)
                 }
 
                 MediaCodec.INFO_OUTPUT_BUFFERS_CHANGED -> Unit
 
                 else -> {
-                    if (index < 0) continue
+                    if (index < 0) return
 
-                    val output =
-                        decoder.getOutputBuffer(index)
+                    val output = decoder.getOutputBuffer(index)
 
                     if (
                         output != null &&
@@ -421,47 +434,29 @@ class OpusDecoder {
                         ) == 0
                     ) {
                         output.position(info.offset)
-                        output.limit(
-                            info.offset + info.size
-                        )
+                        output.limit(info.offset + info.size)
 
-                        val shortBuffer =
-                            output
-                                .duplicate()
-                                .order(
-                                    ByteOrder.LITTLE_ENDIAN
-                                )
-                                .slice()
-                                .order(
-                                    ByteOrder.LITTLE_ENDIAN
-                                )
-                                .asShortBuffer()
+                        val shortBuffer = output
+                            .duplicate()
+                            .order(ByteOrder.LITTLE_ENDIAN)
+                            .asShortBuffer()
 
-                        val samples =
-                            ShortArray(
-                                shortBuffer.remaining()
-                            )
-
+                        val samples = ShortArray(shortBuffer.remaining())
                         shortBuffer.get(samples)
 
-                        frames += DecodedOpusAudio(
-                            samples = samples,
-                            sampleRate =
-                                _outputSampleRate,
-                            channelCount =
-                                _outputChannelCount
+                        frames.add(
+                            DecodedOpusAudio(
+                                samples = samples,
+                                sampleRate = outputSampleRate,
+                                channelCount = outputChannelCount
+                            )
                         )
                     }
 
-                    decoder.releaseOutputBuffer(
-                        index,
-                        false
-                    )
+                    decoder.releaseOutputBuffer(index, false)
                 }
             }
         }
-
-        return frames
     }
 
     private fun updateOutputFormat(
