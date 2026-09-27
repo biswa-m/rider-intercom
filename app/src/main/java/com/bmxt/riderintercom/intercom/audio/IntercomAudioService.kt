@@ -350,6 +350,7 @@ class IntercomAudioService : Service() {
     override fun onDestroy() {
         stopAudio()
         serviceScope.cancel()
+        audioDeviceManager.close()
         super.onDestroy()
     }
 

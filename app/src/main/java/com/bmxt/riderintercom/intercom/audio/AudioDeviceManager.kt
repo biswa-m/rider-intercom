@@ -1,15 +1,73 @@
 package com.bmxt.riderintercom.intercom.audio
 
+import android.bluetooth.BluetoothAdapter
+import android.bluetooth.BluetoothDevice
+import android.bluetooth.BluetoothHeadset
+import android.bluetooth.BluetoothProfile
 import android.content.Context
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
 
+/**
+ * Handles communication-audio routing across Android versions.
+ *
+ * Android 12+ exposes explicit communication-device selection through
+ * AudioManager.availableCommunicationDevices / setCommunicationDevice().
+ * Android 11 and lower use the legacy Bluetooth SCO APIs instead, so there
+ * is no AudioDeviceInfo-based selectable communication-device list for that
+ * path. We therefore expose the connected Bluetooth Headset profile device
+ * separately on legacy Android.
+ */
 class AudioDeviceManager(
-    context: Context
+    context: Context,
+    private val onLegacyBluetoothHeadsetsChanged: (() -> Unit)? = null
 ) {
+    private val appContext = context.applicationContext
+
     private val audioManager =
-        context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        appContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+
+    private val bluetoothAdapter: BluetoothAdapter? =
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            @Suppress("DEPRECATION")
+            BluetoothAdapter.getDefaultAdapter()
+        } else {
+            null
+        }
+
+    private var bluetoothHeadset: BluetoothHeadset? = null
+
+    private val headsetServiceListener = object : BluetoothProfile.ServiceListener {
+        override fun onServiceConnected(profile: Int, proxy: BluetoothProfile) {
+            if (profile == BluetoothProfile.HEADSET) {
+                bluetoothHeadset = proxy as? BluetoothHeadset
+                onLegacyBluetoothHeadsetsChanged?.invoke()
+            }
+        }
+
+        override fun onServiceDisconnected(profile: Int) {
+            if (profile == BluetoothProfile.HEADSET) {
+                bluetoothHeadset = null
+                onLegacyBluetoothHeadsetsChanged?.invoke()
+            }
+        }
+    }
+
+    init {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            try {
+                bluetoothAdapter?.getProfileProxy(
+                    appContext,
+                    headsetServiceListener,
+                    BluetoothProfile.HEADSET
+                )
+            } catch (_: SecurityException) {
+                // Android 11 uses the normal BLUETOOTH permission.
+                // The UI will simply report that no legacy headset was found.
+            }
+        }
+    }
 
     fun getInputDevices(): List<AudioDeviceInfo> =
         audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS).toList()
@@ -22,15 +80,69 @@ class AudioDeviceManager(
             return audioManager.availableCommunicationDevices
         }
 
-        return getOutputDevices().filter { device ->
-            when (device.type) {
-                AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
-                AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
-                AudioDeviceInfo.TYPE_WIRED_HEADSET,
-                AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
-                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> true
-                else -> false
+        // Legacy Android does not provide the S+ selectable communication-device
+        // API. Some devices still expose a SCO AudioDeviceInfo, so include it
+        // when present, along with normal wired communication outputs.
+        return (getInputDevices() + getOutputDevices())
+            .filter { device ->
+                when (device.type) {
+                    AudioDeviceInfo.TYPE_BUILTIN_EARPIECE,
+                    AudioDeviceInfo.TYPE_BUILTIN_SPEAKER,
+                    AudioDeviceInfo.TYPE_WIRED_HEADSET,
+                    AudioDeviceInfo.TYPE_WIRED_HEADPHONES,
+                    AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> true
+                    else -> false
+                }
             }
+            .distinctBy { device -> device.id to device.type }
+    }
+
+    /** Connected classic Bluetooth HFP/Headset devices on Android 11 and lower. */
+    fun getLegacyBluetoothHeadsets(): List<LegacyBluetoothHeadset> {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) return emptyList()
+
+        return try {
+            bluetoothHeadset
+                ?.connectedDevices
+                ?.map { device ->
+                    LegacyBluetoothHeadset(
+                        name = device.displayNameCompat(),
+                        address = device.address
+                    )
+                }
+                ?.distinctBy { it.address }
+                .orEmpty()
+        } catch (_: SecurityException) {
+            emptyList()
+        }
+    }
+
+    fun isLegacyBluetoothScoOn(): Boolean =
+        Build.VERSION.SDK_INT <= Build.VERSION_CODES.R && audioManager.isBluetoothScoOn
+
+    /**
+     * Requests legacy Bluetooth SCO asynchronously.
+     * startBluetoothSco() does not mean SCO is immediately connected; callers
+     * should observe isBluetoothScoOn / routing state rather than treating the
+     * request as an immediate connection.
+     */
+    fun startLegacyBluetoothSco(): Boolean {
+        if (Build.VERSION.SDK_INT > Build.VERSION_CODES.R) return false
+
+        return try {
+            if (getLegacyBluetoothHeadsets().isEmpty()) return false
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            audioManager.startBluetoothSco()
+            true
+        } catch (_: SecurityException) {
+            false
+        }
+    }
+
+    fun stopLegacyBluetoothSco() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            audioManager.isBluetoothScoOn = false
+            audioManager.stopBluetoothSco()
         }
     }
 
@@ -47,10 +159,7 @@ class AudioDeviceManager(
         }
 
         if (device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
-            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
-            audioManager.startBluetoothSco()
-            audioManager.isBluetoothScoOn = true
-            return true
+            return startLegacyBluetoothSco()
         }
 
         // Wired devices normally route automatically on Android 10/11.
@@ -61,8 +170,7 @@ class AudioDeviceManager(
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
             audioManager.clearCommunicationDevice()
         } else {
-            audioManager.isBluetoothScoOn = false
-            audioManager.stopBluetoothSco()
+            stopLegacyBluetoothSco()
             audioManager.mode = AudioManager.MODE_NORMAL
         }
     }
@@ -72,9 +180,8 @@ class AudioDeviceManager(
     }
 
     fun endCommunicationMode() {
-        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) {
-            audioManager.isBluetoothScoOn = false
-            audioManager.stopBluetoothSco()
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            stopLegacyBluetoothSco()
         }
         audioManager.mode = AudioManager.MODE_NORMAL
     }
@@ -86,6 +193,24 @@ class AudioDeviceManager(
 
     fun getInputDeviceName(device: AudioDeviceInfo): String = describeDevice(device)
     fun getOutputDeviceName(device: AudioDeviceInfo): String = describeDevice(device)
+
+    fun close() {
+        if (Build.VERSION.SDK_INT <= Build.VERSION_CODES.R) {
+            try {
+                bluetoothAdapter?.let { adapter ->
+                    bluetoothHeadset?.let { headset ->
+                        adapter.closeProfileProxy(BluetoothProfile.HEADSET, headset)
+                    }
+                }
+            } catch (_: Exception) {
+                // Best-effort cleanup.
+            }
+            bluetoothHeadset = null
+        }
+    }
+
+    private fun BluetoothDevice.displayNameCompat(): String =
+        name?.takeIf { it.isNotBlank() } ?: "Bluetooth Headset"
 
     private fun deviceTypeName(type: Int): String = when (type) {
         AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Built-in Microphone"
@@ -100,3 +225,8 @@ class AudioDeviceManager(
         else -> "Unknown ($type)"
     }
 }
+
+data class LegacyBluetoothHeadset(
+    val name: String,
+    val address: String
+)

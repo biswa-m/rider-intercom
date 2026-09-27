@@ -2,6 +2,7 @@ package com.bmxt.riderintercom
 
 import android.app.Application
 import android.media.AudioDeviceInfo
+import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import androidx.lifecycle.AndroidViewModel
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
 import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
@@ -13,7 +14,8 @@ import kotlinx.coroutines.flow.asStateFlow
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
-    private val audioDeviceManager = AudioDeviceManager(application)
+    private val audioDeviceManager =
+        AudioDeviceManager(application) { refreshAudioDevices() }
 
     val audioRunning: StateFlow<Boolean> =
         IntercomAudioService.runningState
@@ -36,6 +38,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val outputDevices: StateFlow<List<AudioDeviceInfo>> =
         _outputDevices.asStateFlow()
 
+    private val _legacyBluetoothHeadsets =
+        MutableStateFlow<List<LegacyBluetoothHeadset>>(emptyList())
+    val legacyBluetoothHeadsets: StateFlow<List<LegacyBluetoothHeadset>> =
+        _legacyBluetoothHeadsets.asStateFlow()
+
+    private val _legacyBluetoothScoActive = MutableStateFlow(false)
+    val legacyBluetoothScoActive: StateFlow<Boolean> =
+        _legacyBluetoothScoActive.asStateFlow()
+
     private val _communicationDevices =
         MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
     val communicationDevices: StateFlow<List<AudioDeviceInfo>> =
@@ -55,8 +66,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _inputDevices.value = audioDeviceManager.getInputDevices()
         _outputDevices.value = audioDeviceManager.getOutputDevices()
         _communicationDevices.value = audioDeviceManager.getCommunicationDevices()
+        _legacyBluetoothHeadsets.value = audioDeviceManager.getLegacyBluetoothHeadsets()
+        _legacyBluetoothScoActive.value = audioDeviceManager.isLegacyBluetoothScoOn()
         _currentCommunicationDevice.value =
             audioDeviceManager.getCurrentCommunicationDevice()
+    }
+
+    fun selectLegacyBluetoothSco(): Boolean {
+        _routingError.value = null
+        val started = audioDeviceManager.startLegacyBluetoothSco()
+        if (!started) {
+            _routingError.value =
+                if (audioDeviceManager.getLegacyBluetoothHeadsets().isEmpty()) {
+                    "No connected Bluetooth headset with a classic Headset/HFP profile was reported by Android."
+                } else {
+                    "Android could not start Bluetooth SCO."
+                }
+        }
+        refreshAudioDevices()
+        return started
     }
 
     fun selectCommunicationDevice(device: AudioDeviceInfo): Boolean {
@@ -159,6 +187,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         audioDeviceManager.describeDevice(device)
 
     override fun onCleared() {
+        audioDeviceManager.close()
         // The foreground service owns the audio lifecycle.
         // Do not stop audio when the Activity/ViewModel is recreated.
         super.onCleared()

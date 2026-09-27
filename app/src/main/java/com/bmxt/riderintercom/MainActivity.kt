@@ -39,6 +39,10 @@ class MainActivity : ComponentActivity() {
                 viewModel.outputDevices.collectAsState()
             val communicationDevices by
                 viewModel.communicationDevices.collectAsState()
+            val legacyBluetoothHeadsets by
+                viewModel.legacyBluetoothHeadsets.collectAsState()
+            val legacyBluetoothScoActive by
+                viewModel.legacyBluetoothScoActive.collectAsState()
             val currentCommunicationDevice by
                 viewModel.currentCommunicationDevice.collectAsState()
             val routingError by
@@ -166,11 +170,16 @@ class MainActivity : ComponentActivity() {
                         inputDevices = inputDevices,
                         outputDevices = outputDevices,
                         communicationDevices = communicationDevices,
+                        legacyBluetoothHeadsets = legacyBluetoothHeadsets,
+                        legacyBluetoothScoActive = legacyBluetoothScoActive,
                         currentCommunicationDevice = currentCommunicationDevice,
                         routingError = routingError,
                         inputDeviceName = viewModel::inputDeviceName,
                         outputDeviceName = viewModel::outputDeviceName,
                         describeDevice = viewModel::describeDevice,
+                        onSelectLegacyBluetoothSco = {
+                            viewModel.selectLegacyBluetoothSco()
+                        },
                         onSelectCommunicationDevice = { device ->
                             if (
                                 Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&

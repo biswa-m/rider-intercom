@@ -1,6 +1,7 @@
 package com.bmxt.riderintercom.ui.screens
 
 import android.media.AudioDeviceInfo
+import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Spacer
@@ -33,6 +34,8 @@ fun AudioTestScreen(
     inputDevices: List<AudioDeviceInfo>,
     outputDevices: List<AudioDeviceInfo>,
     communicationDevices: List<AudioDeviceInfo>,
+    legacyBluetoothHeadsets: List<LegacyBluetoothHeadset>,
+    legacyBluetoothScoActive: Boolean,
     currentCommunicationDevice: AudioDeviceInfo?,
     routingError: String?,
     localIpv4Addresses: List<String>,
@@ -40,6 +43,7 @@ fun AudioTestScreen(
     inputDeviceName: (AudioDeviceInfo) -> String,
     outputDeviceName: (AudioDeviceInfo) -> String,
     describeDevice: (AudioDeviceInfo) -> String,
+    onSelectLegacyBluetoothSco: () -> Unit,
     onSelectCommunicationDevice: (AudioDeviceInfo) -> Unit,
     onClearCommunicationDevice: () -> Unit,
     onStart: () -> Unit,
@@ -147,14 +151,45 @@ fun AudioTestScreen(
                 "Communication devices",
                 style = MaterialTheme.typography.titleMedium
             )
+
+            if (legacyBluetoothHeadsets.isNotEmpty()) {
+                Spacer(modifier = Modifier.height(8.dp))
+                Text(
+                    "Bluetooth headsets (legacy Android)",
+                    style = MaterialTheme.typography.titleSmall
+                )
+                Text(
+                    "Android 11 uses the legacy Bluetooth SCO route rather than the Android 12+ selectable-device API."
+                )
+            }
         }
 
-        if (communicationDevices.isEmpty()) {
-            item {
-                Text("No selectable communication devices reported by Android.")
+        if (legacyBluetoothHeadsets.isNotEmpty()) {
+            items(
+                legacyBluetoothHeadsets,
+                key = { headset -> "bt-${headset.address}" }
+            ) { headset ->
+                Button(
+                    onClick = onSelectLegacyBluetoothSco,
+                    modifier = Modifier.fillMaxWidth()
+                ) {
+                    Text(
+                        if (legacyBluetoothScoActive) {
+                            "${headset.name} | Bluetooth SCO (active)"
+                        } else {
+                            "${headset.name} | Bluetooth SCO"
+                        }
+                    )
+                }
             }
-        } else {
-            items(communicationDevices, key = { it.id }) { device ->
+        } else if (communicationDevices.isEmpty()) {
+            item {
+                Text("No connected Bluetooth headset reported by Android.")
+            }
+        }
+
+        if (communicationDevices.isNotEmpty()) {
+            items(communicationDevices, key = { "comm-${it.id}-${it.type}" }) { device ->
                 Button(onClick = { onSelectCommunicationDevice(device) }) {
                     Text(describeDevice(device))
                 }
