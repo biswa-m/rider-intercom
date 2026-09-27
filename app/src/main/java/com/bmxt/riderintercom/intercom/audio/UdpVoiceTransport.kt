@@ -11,18 +11,15 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 
-/**
- * Simple one-peer UDP transport used for the networking prototype.
- *
- * Both phones use the same local UDP port and send to the other phone's IP.
- * There is no discovery, encryption, retransmission, or NAT traversal yet.
- */
+/** One-peer UDP transport for Opus voice packets. */
 class UdpVoiceTransport(
     private val localPort: Int,
     private val peerHost: String,
     private val peerPort: Int,
-    private val onPacket: (PcmVoicePacket) -> Unit,
-    private val onState: (String) -> Unit
+    private val onPacket: (packet: OpusVoicePacket, packetBytes: Int) -> Unit,
+    private val onMalformedPacket: (packetBytes: Int) -> Unit,
+    private val onState: (String) -> Unit,
+    private val onError: (String) -> Unit
 ) {
     companion object {
         private const val TAG = "UdpVoiceTransport"
@@ -41,44 +38,42 @@ class UdpVoiceTransport(
 
         return try {
             peerAddress = InetAddress.getByName(peerHost)
-            socket = DatagramSocket(localPort).apply {
-                soTimeout = 1000
-            }
+            socket = DatagramSocket(localPort).apply { soTimeout = 1000 }
 
             onState("UDP listening on $localPort; peer $peerHost:$peerPort")
-
-            receiveJob = scope.launch(Dispatchers.IO) {
-                receiveLoop()
-            }
-
+            receiveJob = scope.launch(Dispatchers.IO) { receiveLoop() }
             true
         } catch (e: Exception) {
             Log.e(TAG, "Unable to start UDP transport", e)
-            onState("UDP start failed: ${e.message ?: "unknown error"}")
+            val message = "UDP start failed: ${e.message ?: "unknown error"}"
+            onState(message)
+            onError(message)
             stop()
             false
         }
     }
 
-    fun send(samples: ShortArray) {
-        val targetAddress = peerAddress ?: return
-        val currentSocket = socket ?: return
+    /** Returns the number of bytes sent, or 0 on failure. */
+    fun send(sampleCount: Int, opusData: ByteArray): Int {
+        val targetAddress = peerAddress ?: return 0
+        val currentSocket = socket ?: return 0
 
-        try {
-            val payload = PcmVoicePacket.encode(
-                sequence.incrementAndGet(),
-                samples
+        return try {
+            val payload = OpusVoicePacket.encode(
+                sequence = sequence.incrementAndGet(),
+                sampleCount = sampleCount,
+                payload = opusData
             )
-            val packet = DatagramPacket(
-                payload,
-                payload.size,
-                targetAddress,
-                peerPort
+            currentSocket.send(
+                DatagramPacket(payload, payload.size, targetAddress, peerPort)
             )
-            currentSocket.send(packet)
+            payload.size
         } catch (e: Exception) {
             Log.e(TAG, "UDP send failed", e)
-            onState("UDP send error: ${e.message ?: "unknown error"}")
+            val message = "UDP send error: ${e.message ?: "unknown error"}"
+            onState(message)
+            onError(message)
+            0
         }
     }
 
@@ -87,25 +82,24 @@ class UdpVoiceTransport(
 
         while (kotlinx.coroutines.currentCoroutineContext().isActive) {
             val currentSocket = socket ?: break
-
             try {
                 val packet = DatagramPacket(buffer, buffer.size)
                 currentSocket.receive(packet)
 
-                val decoded = PcmVoicePacket.decode(
-                    packet.data,
-                    packet.length
-                )
-
+                val decoded = OpusVoicePacket.decode(packet.data, packet.length)
                 if (decoded != null) {
-                    onPacket(decoded)
+                    onPacket(decoded, packet.length)
+                } else {
+                    onMalformedPacket(packet.length)
                 }
             } catch (_: java.net.SocketTimeoutException) {
                 // Periodically wake so cancellation is observed.
             } catch (e: Exception) {
                 if (kotlinx.coroutines.currentCoroutineContext().isActive) {
                     Log.e(TAG, "UDP receive failed", e)
-                    onState("UDP receive error: ${e.message ?: "unknown error"}")
+                    val message = "UDP receive error: ${e.message ?: "unknown error"}"
+                    onState(message)
+                    onError(message)
                 }
                 break
             }
@@ -115,12 +109,7 @@ class UdpVoiceTransport(
     fun stop() {
         receiveJob?.cancel()
         receiveJob = null
-
-        try {
-            socket?.close()
-        } catch (_: Exception) {
-        }
-
+        try { socket?.close() } catch (_: Exception) {}
         socket = null
         peerAddress = null
         onState("UDP stopped")

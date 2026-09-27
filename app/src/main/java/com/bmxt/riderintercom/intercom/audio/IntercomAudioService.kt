@@ -53,6 +53,9 @@ class IntercomAudioService : Service() {
         private val _voiceDetected = MutableStateFlow(false)
         val voiceDetectedState: StateFlow<Boolean> = _voiceDetected.asStateFlow()
 
+        private val _debugState = MutableStateFlow(AudioDebugState())
+        val debugState: StateFlow<AudioDebugState> = _debugState.asStateFlow()
+
         val isRunning: Boolean
             get() = _running.value
 
@@ -202,8 +205,9 @@ class IntercomAudioService : Service() {
 
                 networkAudio = network
                 voiceStateJob = serviceScope.launch {
-                    network.voiceDetected.collect { detected ->
-                        _voiceDetected.value = detected
+                    network.debugState.collect { state ->
+                        _voiceDetected.value = state.voiceDetected
+                        _debugState.value = state
                     }
                 }
             } else {
@@ -220,8 +224,9 @@ class IntercomAudioService : Service() {
 
                 audioLoopback = loopback
                 voiceStateJob = serviceScope.launch {
-                    loopback.voiceDetected.collect { detected ->
-                        _voiceDetected.value = detected
+                    loopback.debugState.collect { state ->
+                        _voiceDetected.value = state.voiceDetected
+                        _debugState.value = state
                     }
                 }
             }
@@ -258,6 +263,7 @@ class IntercomAudioService : Service() {
         networkAudio = null
 
         _voiceDetected.value = false
+        _debugState.value = AudioDebugState()
         cleanupAudioRouting()
         setRunning(false)
         stopForegroundCompat()

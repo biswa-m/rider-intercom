@@ -4,6 +4,7 @@ import android.app.Application
 import android.media.AudioDeviceInfo
 import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import androidx.lifecycle.AndroidViewModel
+import com.bmxt.riderintercom.intercom.audio.AudioDebugState
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
 import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
 import com.bmxt.riderintercom.intercom.audio.NetworkAudioManager
@@ -22,6 +23,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     val voiceDetected: StateFlow<Boolean> =
         IntercomAudioService.voiceDetectedState
+
+    val debugState: StateFlow<AudioDebugState> =
+        IntercomAudioService.debugState
 
     val localIpv4Addresses: List<String>
         get() = NetworkUtils.getLocalIpv4Addresses()

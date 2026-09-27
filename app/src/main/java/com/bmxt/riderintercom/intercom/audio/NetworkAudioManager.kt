@@ -14,39 +14,36 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.concurrent.atomic.AtomicInteger
+import kotlinx.coroutines.flow.update
+import java.util.concurrent.atomic.AtomicLong
 
 /**
- * First two-phone networking audio engine.
+ * Two-phone networking audio engine.
  *
- * Capture:
- * Mic -> 20 ms PCM frame -> VAD -> UDP
- *
- * Playback:
- * UDP PCM frame -> AudioTrack -> Bluetooth SCO / communication output
- *
- * This intentionally uses raw PCM only to validate transport and latency.
- * Opus will replace the packet payload in the next codec milestone.
+ * Mic -> PCM -> VAD -> Opus -> UDP
+ * UDP -> Opus -> PCM -> AudioTrack
  */
 class NetworkAudioManager {
-
     companion object {
         private const val TAG = "NetworkAudioManager"
         const val SAMPLE_RATE = 16_000
         const val FRAME_MS = 20
         const val FRAME_SAMPLES = SAMPLE_RATE * FRAME_MS / 1000
+        const val FRAME_BYTES = FRAME_SAMPLES * 2
         private const val CHANNEL_IN = AudioFormat.CHANNEL_IN_MONO
         private const val CHANNEL_OUT = AudioFormat.CHANNEL_OUT_MONO
         private const val ENCODING = AudioFormat.ENCODING_PCM_16BIT
         const val DEFAULT_PORT = 45_000
+        private const val DEBUG_EMIT_INTERVAL_MS = 100L
+        private const val RX_ACTIVE_WINDOW_MS = 750L
     }
 
     private var audioRecord: AudioRecord? = null
     private var audioTrack: AudioTrack? = null
     private var audioJob: Job? = null
-
     private var transport: UdpVoiceTransport? = null
-    private var transportScope: CoroutineScope? = null
+    private var encoder: OpusEncoder? = null
+    private var decoder: OpusDecoder? = null
 
     private val _voiceDetected = MutableStateFlow(false)
     val voiceDetected: StateFlow<Boolean> = _voiceDetected.asStateFlow()
@@ -54,11 +51,31 @@ class NetworkAudioManager {
     private val _networkState = MutableStateFlow("Stopped")
     val networkState: StateFlow<String> = _networkState.asStateFlow()
 
-    private val _packetsSent = AtomicInteger(0)
-    private val _packetsReceived = AtomicInteger(0)
+    private val _debugState = MutableStateFlow(AudioDebugState())
+    val debugState: StateFlow<AudioDebugState> = _debugState.asStateFlow()
 
-    fun packetsSent(): Int = _packetsSent.get()
-    fun packetsReceived(): Int = _packetsReceived.get()
+    private val packetsSent = AtomicLong(0)
+    private val packetsReceived = AtomicLong(0)
+    private val malformedPackets = AtomicLong(0)
+    private val bytesSent = AtomicLong(0)
+    private val bytesReceived = AtomicLong(0)
+    private val encodedFrames = AtomicLong(0)
+    private val encodeNoOutputFrames = AtomicLong(0)
+    private val decodedFrames = AtomicLong(0)
+    private val decodeNoOutputFrames = AtomicLong(0)
+    private val playbackSamples = AtomicLong(0)
+    private val playbackWriteFailures = AtomicLong(0)
+
+    @Volatile private var micLevelDb = -96f
+    @Volatile private var remoteLevelDb = -96f
+    @Volatile private var transmittingAudio = false
+    @Volatile private var lastReceivedAtMs = 0L
+    @Volatile private var lastSentPayloadBytes = 0
+    @Volatile private var lastReceivedPayloadBytes = 0
+    @Volatile private var lastReceivedSequence = -1
+    @Volatile private var lastError: String? = null
+    @Volatile private var peer = ""
+    @Volatile private var lastDebugEmitMs = 0L
 
     fun start(
         scope: CoroutineScope,
@@ -68,32 +85,18 @@ class NetworkAudioManager {
     ): Boolean {
         if (audioJob?.isActive == true) return false
         if (peerHost.isBlank()) {
-            _networkState.value = "Peer IP is required"
+            setError("Peer IP is required")
             return false
         }
 
-        val minRecordBuffer = AudioRecord.getMinBufferSize(
-            SAMPLE_RATE,
-            CHANNEL_IN,
-            ENCODING
-        )
-        val minTrackBuffer = AudioTrack.getMinBufferSize(
-            SAMPLE_RATE,
-            CHANNEL_OUT,
-            ENCODING
-        )
-
+        val minRecordBuffer = AudioRecord.getMinBufferSize(SAMPLE_RATE, CHANNEL_IN, ENCODING)
+        val minTrackBuffer = AudioTrack.getMinBufferSize(SAMPLE_RATE, CHANNEL_OUT, ENCODING)
         if (minRecordBuffer <= 0 || minTrackBuffer <= 0) {
-            _networkState.value = "Android could not determine audio buffer sizes"
+            setError("Android could not determine audio buffer sizes")
             return false
         }
 
-        val bufferSize = maxOf(
-            minRecordBuffer,
-            minTrackBuffer,
-            FRAME_SAMPLES * 2
-        )
-
+        val bufferSize = maxOf(minRecordBuffer, minTrackBuffer, FRAME_BYTES * 2)
         val record = AudioRecord(
             MediaRecorder.AudioSource.VOICE_COMMUNICATION,
             SAMPLE_RATE,
@@ -101,7 +104,6 @@ class NetworkAudioManager {
             ENCODING,
             bufferSize
         )
-
         val track = AudioTrack.Builder()
             .setAudioAttributes(
                 AudioAttributes.Builder()
@@ -120,52 +122,103 @@ class NetworkAudioManager {
             .setTransferMode(AudioTrack.MODE_STREAM)
             .build()
 
+        val opusEncoder = OpusEncoder()
+        val opusDecoder = OpusDecoder()
+
         try {
+            opusEncoder.start()
+            opusDecoder.start()
             record.startRecording()
             track.play()
         } catch (e: Exception) {
-            Log.e(TAG, "Unable to start network audio devices", e)
+            Log.e(TAG, "Unable to start Opus/audio devices", e)
+            opusEncoder.stop()
+            opusDecoder.stop()
             try { record.release() } catch (_: Exception) {}
             try { track.release() } catch (_: Exception) {}
-            _networkState.value =
-                "Unable to start microphone/speaker: ${e.message ?: "unknown error"}"
+            setError("Unable to start Opus/microphone/speaker: ${e.message ?: "unknown error"}")
             return false
         }
 
+        resetStats()
+        peer = "$peerHost:$peerPort"
+        encoder = opusEncoder
+        decoder = opusDecoder
         audioRecord = record
         audioTrack = track
-        transportScope = scope
 
         val udp = UdpVoiceTransport(
             localPort = localPort,
             peerHost = peerHost,
             peerPort = peerPort,
-            onPacket = { packet ->
-                _packetsReceived.incrementAndGet()
+            onPacket = { packet, packetBytes ->
+                packetsReceived.incrementAndGet()
+                bytesReceived.addAndGet(packetBytes.toLong())
+                lastReceivedAtMs = System.currentTimeMillis()
+                lastReceivedPayloadBytes = packet.payload.size
+                lastReceivedSequence = packet.sequence
+
                 try {
-                    audioTrack?.write(
-                        packet.samples,
-                        0,
-                        packet.samples.size
-                    )
+                    val decodedFrames = decoder?.decode(packet.payload).orEmpty()
+                    if (decodedFrames.isEmpty()) {
+                        decodeNoOutputFrames.incrementAndGet()
+                    }
+
+                    decodedFrames.forEach { samples ->
+                        remoteLevelDb = AudioLevelUtils.rmsDb(samples)
+                        val trackInstance = audioTrack
+                        if (trackInstance == null) {
+                            playbackWriteFailures.incrementAndGet()
+                            setError("AudioTrack is null while receiving network audio")
+                            return@forEach
+                        }
+
+                        val written = trackInstance.write(
+                            samples,
+                            0,
+                            samples.size,
+                            AudioTrack.WRITE_BLOCKING
+                        )
+                        if (written > 0) {
+                            decodedFrames.incrementAndGet()
+                            playbackSamples.addAndGet(written.toLong())
+                        } else {
+                            playbackWriteFailures.incrementAndGet()
+                            setError("AudioTrack write failed: return code $written")
+                        }
+                    }
+                    publishDebug(force = true)
                 } catch (e: Exception) {
-                    Log.e(TAG, "Remote audio playback failed", e)
+                    Log.e(TAG, "Remote Opus playback failed", e)
+                    setError("Opus decode/playback error: ${e.message ?: "unknown error"}")
                 }
+            },
+            onMalformedPacket = { packetBytes ->
+                malformedPackets.incrementAndGet()
+                setError("Received malformed UDP packet ($packetBytes bytes)")
+                publishDebug(force = true)
             },
             onState = { state ->
                 _networkState.value = state
+                publishDebug(force = true)
+            },
+            onError = { message ->
+                setError(message)
+                publishDebug(force = true)
             }
         )
 
         if (!udp.start(scope)) {
+            opusEncoder.stop()
+            opusDecoder.stop()
             stop()
             return false
         }
 
         transport = udp
-        _packetsSent.set(0)
-        _packetsReceived.set(0)
-        _networkState.value = "Connected to $peerHost:$peerPort"
+        _networkState.value = "Opus ready → $peer"
+        _voiceDetected.value = false
+        publishDebug(force = true)
 
         val vad = VoiceActivityDetector()
         val readBuffer = ShortArray(maxOf(bufferSize / 2, FRAME_SAMPLES))
@@ -173,44 +226,58 @@ class NetworkAudioManager {
 
         audioJob = scope.launch(Dispatchers.IO) {
             var vadFrameSize = 0
-
             try {
                 while (isActive) {
-                    val read = audioRecord?.read(
-                        readBuffer,
-                        0,
-                        readBuffer.size
-                    ) ?: break
-
+                    val read = audioRecord?.read(readBuffer, 0, readBuffer.size) ?: break
                     if (read <= 0) continue
 
                     var sourceOffset = 0
-
                     while (sourceOffset < read) {
                         val copyCount = minOf(
                             FRAME_SAMPLES - vadFrameSize,
                             read - sourceOffset
                         )
-
                         readBuffer.copyInto(
                             destination = vadFrame,
                             destinationOffset = vadFrameSize,
                             startIndex = sourceOffset,
                             endIndex = sourceOffset + copyCount
                         )
-
                         vadFrameSize += copyCount
                         sourceOffset += copyCount
 
                         if (vadFrameSize == FRAME_SAMPLES) {
+                            micLevelDb = AudioLevelUtils.rmsDb(vadFrame)
                             val speaking = vad.process(vadFrame)
                             _voiceDetected.value = speaking
+                            transmittingAudio = false
 
                             if (speaking) {
-                                transport?.send(vadFrame.copyOf())
-                                _packetsSent.incrementAndGet()
+                                val opusData = try {
+                                    encoder?.encode(vadFrame)
+                                } catch (e: Exception) {
+                                    setError("Opus encode error: ${e.message ?: "unknown error"}")
+                                    null
+                                }
+
+                                if (opusData == null) {
+                                    encodeNoOutputFrames.incrementAndGet()
+                                } else {
+                                    encodedFrames.incrementAndGet()
+                                    val bytes = transport?.send(
+                                        sampleCount = FRAME_SAMPLES,
+                                        opusData = opusData
+                                    ) ?: 0
+                                    if (bytes > 0) {
+                                        packetsSent.incrementAndGet()
+                                        bytesSent.addAndGet(bytes.toLong())
+                                        lastSentPayloadBytes = opusData.size
+                                        transmittingAudio = true
+                                    }
+                                }
                             }
 
+                            publishDebug()
                             vadFrameSize = 0
                         }
                     }
@@ -218,28 +285,113 @@ class NetworkAudioManager {
             } catch (e: Exception) {
                 if (isActive) {
                     Log.e(TAG, "Network audio capture failed", e)
-                    _networkState.value =
-                        "Audio capture error: ${e.message ?: "unknown error"}"
+                    setError("Audio capture/Opus error: ${e.message ?: "unknown error"}")
+                    publishDebug(force = true)
                 }
             } finally {
                 _voiceDetected.value = false
+                transmittingAudio = false
+                publishDebug(force = true)
             }
         }
 
         return true
     }
 
+    private fun resetStats() {
+        packetsSent.set(0)
+        packetsReceived.set(0)
+        malformedPackets.set(0)
+        bytesSent.set(0)
+        bytesReceived.set(0)
+        encodedFrames.set(0)
+        encodeNoOutputFrames.set(0)
+        decodedFrames.set(0)
+        decodeNoOutputFrames.set(0)
+        playbackSamples.set(0)
+        playbackWriteFailures.set(0)
+        micLevelDb = -96f
+        remoteLevelDb = -96f
+        transmittingAudio = false
+        lastReceivedAtMs = 0L
+        lastSentPayloadBytes = 0
+        lastReceivedPayloadBytes = 0
+        lastReceivedSequence = -1
+        lastError = null
+        lastDebugEmitMs = 0L
+        _debugState.value = AudioDebugState()
+    }
+
+    private fun setError(message: String) {
+        lastError = message
+        _networkState.value = message
+        Log.e(TAG, message)
+    }
+
+    private fun publishDebug(force: Boolean = false) {
+        val now = System.currentTimeMillis()
+        if (!force && now - lastDebugEmitMs < DEBUG_EMIT_INTERVAL_MS) return
+        lastDebugEmitMs = now
+
+        val receiving = lastReceivedAtMs > 0L && now - lastReceivedAtMs <= RX_ACTIVE_WINDOW_MS
+        _debugState.update {
+            it.copy(
+                mode = "Network / Opus",
+                networkState = _networkState.value,
+                micLevelDb = micLevelDb,
+                remoteLevelDb = if (receiving) remoteLevelDb else -96f,
+                voiceDetected = _voiceDetected.value,
+                transmittingAudio = transmittingAudio,
+                receivingAudio = receiving,
+                packetsSent = packetsSent.get(),
+                packetsReceived = packetsReceived.get(),
+                malformedPackets = malformedPackets.get(),
+                bytesSent = bytesSent.get(),
+                bytesReceived = bytesReceived.get(),
+                encodedFrames = encodedFrames.get(),
+                encodeNoOutputFrames = encodeNoOutputFrames.get(),
+                decodedFrames = decodedFrames.get(),
+                decodeNoOutputFrames = decodeNoOutputFrames.get(),
+                playbackSamples = playbackSamples.get(),
+                playbackWriteFailures = playbackWriteFailures.get(),
+                lastReceivedAtMs = lastReceivedAtMs,
+                lastSentPayloadBytes = lastSentPayloadBytes,
+                lastReceivedPayloadBytes = lastReceivedPayloadBytes,
+                lastReceivedSequence = lastReceivedSequence,
+                audioRecordState = audioRecord?.recordingState?.let(::recordStateName) ?: "Null",
+                audioTrackState = audioTrack?.playState?.let(::playStateName) ?: "Null",
+                opusEncoderName = encoder?.codecName ?: "Not started",
+                opusDecoderName = decoder?.codecName ?: "Not started",
+                lastError = lastError
+            )
+        }
+    }
+
+    private fun recordStateName(value: Int): String = when (value) {
+        AudioRecord.RECORDSTATE_RECORDING -> "RECORDING"
+        AudioRecord.RECORDSTATE_STOPPED -> "STOPPED"
+        else -> "UNKNOWN($value)"
+    }
+
+    private fun playStateName(value: Int): String = when (value) {
+        AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
+        AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
+        AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
+        else -> "UNKNOWN($value)"
+    }
+
     fun stop() {
         audioJob?.cancel()
         audioJob = null
-
         transport?.stop()
         transport = null
-        transportScope = null
+        encoder?.stop()
+        encoder = null
+        decoder?.stop()
+        decoder = null
 
         try { audioRecord?.stop() } catch (_: Exception) {}
         try { audioTrack?.stop() } catch (_: Exception) {}
-
         audioRecord?.release()
         audioTrack?.release()
         audioRecord = null
@@ -247,7 +399,7 @@ class NetworkAudioManager {
 
         _voiceDetected.value = false
         _networkState.value = "Stopped"
-        _packetsSent.set(0)
-        _packetsReceived.set(0)
+        transmittingAudio = false
+        publishDebug(force = true)
     }
 }

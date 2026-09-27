@@ -33,6 +33,9 @@ class AudioLoopbackManager {
     private val _voiceDetected = MutableStateFlow(false)
     val voiceDetected: StateFlow<Boolean> = _voiceDetected.asStateFlow()
 
+    private val _debugState = MutableStateFlow(AudioDebugState())
+    val debugState: StateFlow<AudioDebugState> = _debugState.asStateFlow()
+
     fun start(scope: CoroutineScope): Boolean {
         if (loopbackJob?.isActive == true) return false
 
@@ -109,7 +112,35 @@ class AudioLoopbackManager {
                     ) ?: break
 
                     if (read > 0) {
-                        audioTrack?.write(readBuffer, 0, read)
+                        val micDb = AudioLevelUtils.rmsDb(readBuffer, read)
+                        val trackInstance = audioTrack
+                        val written = trackInstance?.write(readBuffer, 0, read) ?: -1
+                        _debugState.value = _debugState.value.copy(
+                            mode = "Local loopback",
+                            networkState = "Local audio test",
+                            micLevelDb = micDb,
+                            remoteLevelDb = -96f,
+                            voiceDetected = _voiceDetected.value,
+                            transmittingAudio = false,
+                            receivingAudio = false,
+                            playbackSamples = if (written > 0) _debugState.value.playbackSamples + written else _debugState.value.playbackSamples,
+                            playbackWriteFailures = if (written <= 0) _debugState.value.playbackWriteFailures + 1 else _debugState.value.playbackWriteFailures,
+                            audioRecordState = audioRecord?.recordingState?.let { state ->
+                                when (state) {
+                                    AudioRecord.RECORDSTATE_RECORDING -> "RECORDING"
+                                    AudioRecord.RECORDSTATE_STOPPED -> "STOPPED"
+                                    else -> "UNKNOWN($state)"
+                                }
+                            } ?: "Null",
+                            audioTrackState = audioTrack?.playState?.let { state ->
+                                when (state) {
+                                    AudioTrack.PLAYSTATE_PLAYING -> "PLAYING"
+                                    AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
+                                    AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
+                                    else -> "UNKNOWN($state)"
+                                }
+                            } ?: "Null"
+                        )
 
                         var sourceOffset = 0
                         while (sourceOffset < read) {
@@ -130,6 +161,9 @@ class AudioLoopbackManager {
 
                             if (vadFrameSize == VAD_FRAME_SAMPLES) {
                                 _voiceDetected.value = vad.process(vadFrame)
+                                _debugState.value = _debugState.value.copy(
+                                    voiceDetected = _voiceDetected.value
+                                )
                                 vadFrameSize = 0
                             }
                         }
@@ -164,5 +198,6 @@ class AudioLoopbackManager {
         audioRecord = null
         audioTrack = null
         _voiceDetected.value = false
+        _debugState.value = AudioDebugState()
     }
 }

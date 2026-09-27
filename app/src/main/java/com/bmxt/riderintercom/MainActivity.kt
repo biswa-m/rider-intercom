@@ -33,6 +33,8 @@ class MainActivity : ComponentActivity() {
                 viewModel.audioRunning.collectAsState()
             val voiceDetected by
                 viewModel.voiceDetected.collectAsState()
+            val debugState by
+                viewModel.debugState.collectAsState()
             val inputDevices by
                 viewModel.inputDevices.collectAsState()
             val outputDevices by
@@ -166,6 +168,7 @@ class MainActivity : ComponentActivity() {
                     AudioTestScreen(
                         audioRunning = audioRunning,
                         voiceDetected = voiceDetected,
+                        debugState = debugState,
                         microphonePermission = hasMicrophonePermission,
                         inputDevices = inputDevices,
                         outputDevices = outputDevices,
