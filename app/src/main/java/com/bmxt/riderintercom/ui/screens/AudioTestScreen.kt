@@ -164,6 +164,12 @@ fun AudioTestScreen(
             } else {
                 Text("Jitter buffer: OFF")
                 Text("Direct RX queue: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets}   Dropped: ${debugState.overflowDroppedPackets}")
+                if (featureConfig.useOpus) {
+                    Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/4   Dropped: ${debugState.decodedPcmQueueDropped}")
+                }
+            }
+            if (featureConfig.useOpus && featureConfig.effectiveJitterBuffer) {
+                Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/4   Dropped: ${debugState.decodedPcmQueueDropped}")
             }
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")

@@ -45,7 +45,8 @@ class NetworkAudioManager(
         private const val JITTER_TARGET_PACKETS = 2
         private const val JITTER_MAX_PACKETS = 6
         private const val PRE_ROLL_FRAMES = 5 // 100 ms
-        private const val DIRECT_RX_QUEUE_MAX = 2
+        private const val DIRECT_RX_QUEUE_MAX = 6
+        private const val DECODED_PCM_QUEUE_MAX = 4
         private const val PLAYBACK_POLL_MS = 2L
         private const val PLAYBACK_WAIT_MS = 3L
     }
@@ -54,6 +55,7 @@ class NetworkAudioManager(
     private var audioTrack: AudioTrack? = null
     private var audioJob: Job? = null
     private var playbackJob: Job? = null
+    private var decoderJob: Job? = null
     private var transport: UdpVoiceTransport? = null
     private var encoder: OpusEncoder? = null
     private var decoder: OpusDecoder? = null
@@ -72,6 +74,16 @@ class NetworkAudioManager(
     private val directRxQueue = ArrayDeque<DirectRxPacket>(DIRECT_RX_QUEUE_MAX)
     private val directRxQueueLock = Any()
     private var directRxDropped = 0L
+
+    private data class DecodedPcmFrame(
+        val samples: ShortArray,
+        val sampleRate: Int,
+        val channelCount: Int
+    )
+
+    private val decodedPcmQueue = ArrayDeque<DecodedPcmFrame>(DECODED_PCM_QUEUE_MAX)
+    private val decodedPcmQueueLock = Any()
+    private var decodedPcmDropped = 0L
 
     private val _voiceDetected = MutableStateFlow(false)
     val voiceDetected: StateFlow<Boolean> = _voiceDetected.asStateFlow()
@@ -165,6 +177,10 @@ class NetworkAudioManager(
         synchronized(directRxQueueLock) {
             directRxQueue.clear()
             directRxDropped = 0L
+        }
+        synchronized(decodedPcmQueueLock) {
+            decodedPcmQueue.clear()
+            decodedPcmDropped = 0L
         }
         peer = "$peerHost:$peerPort"
         encoder = opusEncoder
@@ -389,12 +405,135 @@ class NetworkAudioManager(
 
     private fun startPlaybackLoop(scope: CoroutineScope) {
         playbackJob?.cancel()
+        decoderJob?.cancel()
 
-        playbackJob = if (config.effectiveJitterBuffer) {
-            scope.launch(Dispatchers.IO) { runJitterPlaybackLoop() }
-        } else {
-            scope.launch(Dispatchers.IO) { runDirectPlaybackLoop() }
+        when {
+            config.effectiveJitterBuffer -> {
+                playbackJob = scope.launch(Dispatchers.IO) { runJitterPlaybackLoop() }
+            }
+
+            config.useOpus -> {
+                // Diagnostic/low-latency Opus path: network receive, decode and
+                // playback are separate stages. This prevents AudioTrack.write()
+                // from blocking the UDP packet consumer and overflowing the
+                // compressed-packet queue.
+                startOpusDirectPipelines(scope)
+            }
+
+            else -> {
+                playbackJob = scope.launch(Dispatchers.IO) { runDirectPlaybackLoop() }
+            }
         }
+    }
+
+    private fun startOpusDirectPipelines(scope: CoroutineScope) {
+        decoderJob = scope.launch(Dispatchers.IO) {
+            try {
+                while (isActive) {
+                    val packet = pollDirectPacket()
+                    if (packet !is DirectRxPacket.Opus) {
+                        delay(PLAYBACK_POLL_MS)
+                        continue
+                    }
+
+                    val decodedFrames = try {
+                        decoder?.decode(packet.packet.payload).orEmpty()
+                    } catch (e: Exception) {
+                        setError("Opus decode error: ${e.message ?: "unknown error"}")
+                        emptyList()
+                    }
+
+                    if (decodedFrames.isEmpty()) {
+                        decodeNoOutputFrames.incrementAndGet()
+                    } else {
+                        for (decoded in decodedFrames) {
+                            enqueueDecodedPcmFrame(
+                                DecodedPcmFrame(
+                                    samples = decoded.samples,
+                                    sampleRate = decoded.sampleRate,
+                                    channelCount = decoded.channelCount
+                                )
+                            )
+                        }
+                    }
+                    publishDebug()
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e(TAG, "Opus decoder loop failed", e)
+                    setError("Opus decoder loop error: ${e.message ?: "unknown error"}")
+                    publishDebug(force = true)
+                }
+            }
+        }
+
+        playbackJob = scope.launch(Dispatchers.IO) {
+            try {
+                while (isActive) {
+                    val frame = pollDecodedPcmFrame()
+                    if (frame == null) {
+                        delay(PLAYBACK_POLL_MS)
+                        continue
+                    }
+
+                    val played = playDecodedPcm(frame)
+                    if (!played) {
+                        playbackUnderruns.incrementAndGet()
+                    }
+                    publishDebug()
+                }
+            } catch (e: Exception) {
+                if (isActive) {
+                    Log.e(TAG, "Opus PCM playback loop failed", e)
+                    setError("Opus playback error: ${e.message ?: "unknown error"}")
+                    publishDebug(force = true)
+                }
+            }
+        }
+    }
+
+    private fun enqueueDecodedPcmFrame(frame: DecodedPcmFrame) {
+        synchronized(decodedPcmQueueLock) {
+            if (decodedPcmQueue.size >= DECODED_PCM_QUEUE_MAX) {
+                // Drop the oldest decoded frame to keep latency bounded.
+                decodedPcmQueue.removeFirst()
+                decodedPcmDropped++
+            }
+            decodedPcmQueue.addLast(frame)
+        }
+    }
+
+    private fun pollDecodedPcmFrame(): DecodedPcmFrame? =
+        synchronized(decodedPcmQueueLock) {
+            if (decodedPcmQueue.isEmpty()) null
+            else decodedPcmQueue.removeFirst()
+        }
+
+    private fun playDecodedPcm(frame: DecodedPcmFrame): Boolean {
+        if (frame.samples.isEmpty()) return false
+
+        remoteLevelDb = AudioLevelUtils.rmsDb(frame.samples)
+        val track = ensureAudioTrack(
+            sampleRate = frame.sampleRate,
+            channelCount = frame.channelCount
+        ) ?: return false
+
+        val written = track.write(
+            frame.samples,
+            0,
+            frame.samples.size,
+            AudioTrack.WRITE_BLOCKING
+        )
+
+        if (written > 0) {
+            decodedFrames.incrementAndGet()
+            playbackSamples.addAndGet(written.toLong())
+            return true
+        }
+
+        playbackWriteFailures.incrementAndGet()
+        setError("AudioTrack write failed: return code $written")
+        return false
     }
 
     private suspend fun runDirectPlaybackLoop() {
@@ -725,6 +864,9 @@ class NetworkAudioManager(
         playbackSamples.set(0)
         playbackWriteFailures.set(0)
         playbackUnderruns.set(0)
+        synchronized(decodedPcmQueueLock) {
+            decodedPcmDropped = 0L
+        }
         micLevelDb = -96f
         remoteLevelDb = -96f
         transmittingAudio = false
@@ -755,6 +897,8 @@ class NetworkAudioManager(
 
         val queueDropped = synchronized(directRxQueueLock) { directRxDropped }
         val queueDepth = synchronized(directRxQueueLock) { directRxQueue.size }
+        val decodedQueueDropped = synchronized(decodedPcmQueueLock) { decodedPcmDropped }
+        val decodedQueueDepth = synchronized(decodedPcmQueueLock) { decodedPcmQueue.size }
 
         _debugState.update {
             it.copy(
@@ -786,6 +930,8 @@ class NetworkAudioManager(
                 estimatedLostPackets = if (config.effectiveJitterBuffer) jitter.lostPackets else queueDropped,
                 latePackets = if (config.effectiveJitterBuffer) jitter.latePackets else 0L,
                 overflowDroppedPackets = if (config.effectiveJitterBuffer) jitter.overflowDroppedPackets else queueDropped,
+                decodedPcmQueueDepth = decodedQueueDepth,
+                decodedPcmQueueDropped = decodedQueueDropped,
                 jitterResyncs = if (config.effectiveJitterBuffer) jitter.resyncCount else 0L,
                 playbackUnderruns = playbackUnderruns.get(),
                 audioRecordState = audioRecord?.recordingState?.let(::recordStateName) ?: "Null",
@@ -817,6 +963,8 @@ class NetworkAudioManager(
         audioJob = null
         playbackJob?.cancel()
         playbackJob = null
+        decoderJob?.cancel()
+        decoderJob = null
         transport?.stop()
         transport = null
         encoder?.stop()
@@ -828,6 +976,10 @@ class NetworkAudioManager(
         synchronized(directRxQueueLock) {
             directRxQueue.clear()
             directRxDropped = 0L
+        }
+        synchronized(decodedPcmQueueLock) {
+            decodedPcmQueue.clear()
+            decodedPcmDropped = 0L
         }
 
         try { audioRecord?.stop() } catch (_: Exception) {}

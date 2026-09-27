@@ -33,6 +33,8 @@ data class AudioDebugState(
     val estimatedLostPackets: Long = 0L,
     val latePackets: Long = 0L,
     val overflowDroppedPackets: Long = 0L,
+    val decodedPcmQueueDepth: Int = 0,
+    val decodedPcmQueueDropped: Long = 0L,
     val jitterResyncs: Long = 0L,
     val playbackUnderruns: Long = 0L,
     val audioRecordState: String = "Unknown",
