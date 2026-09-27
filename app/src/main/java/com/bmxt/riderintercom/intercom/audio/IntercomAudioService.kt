@@ -19,6 +19,8 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.launch
 
 /**
  * Owns the intercom audio lifecycle independently from the Activity/ViewModel.
@@ -44,6 +46,9 @@ class IntercomAudioService : Service() {
 
         private val _running = MutableStateFlow(false)
         val runningState: StateFlow<Boolean> = _running.asStateFlow()
+
+        private val _voiceDetected = MutableStateFlow(false)
+        val voiceDetectedState: StateFlow<Boolean> = _voiceDetected.asStateFlow()
 
         val isRunning: Boolean
             get() = _running.value
@@ -78,6 +83,7 @@ class IntercomAudioService : Service() {
 
     private lateinit var audioDeviceManager: AudioDeviceManager
     private var audioLoopback: AudioLoopbackManager? = null
+    private var voiceStateJob: kotlinx.coroutines.Job? = null
 
     override fun onCreate() {
         super.onCreate()
@@ -152,6 +158,12 @@ class IntercomAudioService : Service() {
             }
 
             audioLoopback = loopback
+            voiceStateJob?.cancel()
+            voiceStateJob = serviceScope.launch {
+                loopback.voiceDetected.collect { detected ->
+                    _voiceDetected.value = detected
+                }
+            }
             setRunning(true)
             Log.i(TAG, "Foreground intercom audio started")
         } catch (e: SecurityException) {
@@ -168,9 +180,12 @@ class IntercomAudioService : Service() {
     }
 
     private fun stopAudio() {
+        voiceStateJob?.cancel()
+        voiceStateJob = null
         audioLoopback?.stop()
         audioLoopback = null
 
+        _voiceDetected.value = false
         cleanupAudioRouting()
         setRunning(false)
         stopForegroundCompat()

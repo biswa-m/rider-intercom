@@ -16,6 +16,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val audioRunning: StateFlow<Boolean> =
         IntercomAudioService.runningState
 
+    val voiceDetected: StateFlow<Boolean> =
+        IntercomAudioService.voiceDetectedState
+
     private val _inputDevices =
         MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
     val inputDevices: StateFlow<List<AudioDeviceInfo>> =

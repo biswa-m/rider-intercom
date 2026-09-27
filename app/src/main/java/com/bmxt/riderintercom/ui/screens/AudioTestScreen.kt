@@ -20,6 +20,7 @@ import androidx.compose.ui.unit.dp
 @Composable
 fun AudioTestScreen(
     audioRunning: Boolean,
+    voiceDetected: Boolean,
     microphonePermission: Boolean,
     inputDevices: List<AudioDeviceInfo>,
     outputDevices: List<AudioDeviceInfo>,
@@ -43,6 +44,15 @@ fun AudioTestScreen(
             Spacer(modifier = Modifier.height(8.dp))
 
             Text(if (audioRunning) "Audio: Running" else "Audio: Stopped")
+            if (audioRunning) {
+                Text(
+                    if (voiceDetected) {
+                        "Voice activity: Speech detected"
+                    } else {
+                        "Voice activity: Silence / listening"
+                    }
+                )
+            }
             Text(
                 if (microphonePermission) {
                     "Microphone: Permission granted"
