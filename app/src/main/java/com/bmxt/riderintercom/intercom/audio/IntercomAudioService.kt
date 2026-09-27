@@ -68,7 +68,8 @@ class IntercomAudioService : Service() {
             communicationDeviceId: Int = NO_DEVICE_ID,
             peerHost: String? = null,
             localPort: Int = NetworkAudioManager.DEFAULT_PORT,
-            peerPort: Int = NetworkAudioManager.DEFAULT_PORT
+            peerPort: Int = NetworkAudioManager.DEFAULT_PORT,
+            featureConfig: IntercomFeatureConfig = IntercomFeatureConfig.default()
         ) {
             val intent = Intent(context, IntercomAudioService::class.java).apply {
                 action = ACTION_START
@@ -76,6 +77,10 @@ class IntercomAudioService : Service() {
                 peerHost?.let { putExtra(EXTRA_PEER_HOST, it) }
                 putExtra(EXTRA_LOCAL_PORT, localPort)
                 putExtra(EXTRA_PEER_PORT, peerPort)
+                putExtra(IntercomFeatureConfig.EXTRA_USE_VAD, featureConfig.useVad)
+                putExtra(IntercomFeatureConfig.EXTRA_USE_OPUS, featureConfig.useOpus)
+                putExtra(IntercomFeatureConfig.EXTRA_USE_JITTER_BUFFER, featureConfig.useJitterBuffer)
+                putExtra(IntercomFeatureConfig.EXTRA_USE_VAD_PRE_ROLL, featureConfig.useVadPreRoll)
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -131,12 +136,14 @@ class IntercomAudioService : Service() {
                     EXTRA_PEER_PORT,
                     NetworkAudioManager.DEFAULT_PORT
                 ) ?: NetworkAudioManager.DEFAULT_PORT
+                val featureConfig = IntercomFeatureConfig.fromIntent(intent)
 
                 startAudio(
                     communicationDeviceId = communicationDeviceId,
                     peerHost = peerHost,
                     localPort = localPort,
-                    peerPort = peerPort
+                    peerPort = peerPort,
+                    featureConfig = featureConfig
                 )
             }
         }
@@ -149,7 +156,8 @@ class IntercomAudioService : Service() {
         communicationDeviceId: Int,
         peerHost: String?,
         localPort: Int,
-        peerPort: Int
+        peerPort: Int,
+        featureConfig: IntercomFeatureConfig
     ) {
         if (isRunning) return
 
@@ -186,7 +194,7 @@ class IntercomAudioService : Service() {
             voiceStateJob = null
 
             if (!peerHost.isNullOrBlank()) {
-                val network = NetworkAudioManager()
+                val network = NetworkAudioManager(featureConfig)
 
                 if (!network.start(
                         scope = serviceScope,
@@ -235,7 +243,7 @@ class IntercomAudioService : Service() {
             Log.i(
                 TAG,
                 if (!peerHost.isNullOrBlank()) {
-                    "Foreground network intercom started: $peerHost:$peerPort"
+                    "Foreground network intercom started: $peerHost:$peerPort (${featureConfig.pipelineDescription})"
                 } else {
                     "Foreground local audio test started"
                 }

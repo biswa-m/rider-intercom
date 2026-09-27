@@ -11,12 +11,12 @@ import java.net.DatagramSocket
 import java.net.InetAddress
 import java.util.concurrent.atomic.AtomicInteger
 
-/** One-peer UDP transport for Opus voice packets. */
+/** One-peer UDP transport supporting both raw PCM and Opus voice packets. */
 class UdpVoiceTransport(
     private val localPort: Int,
     private val peerHost: String,
     private val peerPort: Int,
-    private val onPacket: (packet: OpusVoicePacket, packetBytes: Int) -> Unit,
+    private val onPacket: (packet: ReceivedVoicePacket) -> Unit,
     private val onMalformedPacket: (packetBytes: Int) -> Unit,
     private val onState: (String) -> Unit,
     private val onError: (String) -> Unit
@@ -54,16 +54,29 @@ class UdpVoiceTransport(
     }
 
     /** Returns the number of bytes sent, or 0 on failure. */
-    fun send(sampleCount: Int, opusData: ByteArray): Int {
+    fun sendPcm(samples: ShortArray): Int {
+        val payload = PcmVoicePacket.encode(
+            sequence = sequence.incrementAndGet(),
+            samples = samples
+        )
+        return sendDatagram(payload)
+    }
+
+    /** Returns the number of bytes sent, or 0 on failure. */
+    fun sendOpus(sampleCount: Int, opusData: ByteArray): Int {
+        val payload = OpusVoicePacket.encode(
+            sequence = sequence.incrementAndGet(),
+            sampleCount = sampleCount,
+            payload = opusData
+        )
+        return sendDatagram(payload)
+    }
+
+    private fun sendDatagram(payload: ByteArray): Int {
         val targetAddress = peerAddress ?: return 0
         val currentSocket = socket ?: return 0
 
         return try {
-            val payload = OpusVoicePacket.encode(
-                sequence = sequence.incrementAndGet(),
-                sampleCount = sampleCount,
-                payload = opusData
-            )
             currentSocket.send(
                 DatagramPacket(payload, payload.size, targetAddress, peerPort)
             )
@@ -86,12 +99,19 @@ class UdpVoiceTransport(
                 val packet = DatagramPacket(buffer, buffer.size)
                 currentSocket.receive(packet)
 
-                val decoded = OpusVoicePacket.decode(packet.data, packet.length)
-                if (decoded != null) {
-                    onPacket(decoded, packet.length)
-                } else {
-                    onMalformedPacket(packet.length)
+                val pcm = PcmVoicePacket.decode(packet.data, packet.length)
+                if (pcm != null) {
+                    onPacket(ReceivedVoicePacket.Pcm(pcm, packet.length))
+                    continue
                 }
+
+                val opus = OpusVoicePacket.decode(packet.data, packet.length)
+                if (opus != null) {
+                    onPacket(ReceivedVoicePacket.Opus(opus, packet.length))
+                    continue
+                }
+
+                onMalformedPacket(packet.length)
             } catch (_: java.net.SocketTimeoutException) {
                 // Periodically wake so cancellation is observed.
             } catch (e: Exception) {

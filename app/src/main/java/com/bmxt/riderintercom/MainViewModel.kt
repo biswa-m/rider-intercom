@@ -7,11 +7,13 @@ import androidx.lifecycle.AndroidViewModel
 import com.bmxt.riderintercom.intercom.audio.AudioDebugState
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
 import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
+import com.bmxt.riderintercom.intercom.audio.IntercomFeatureConfig
 import com.bmxt.riderintercom.intercom.audio.NetworkAudioManager
 import com.bmxt.riderintercom.intercom.audio.NetworkUtils
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.flow.update
 
 class MainViewModel(application: Application) : AndroidViewModel(application) {
 
@@ -31,6 +33,41 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = NetworkUtils.getLocalIpv4Addresses()
 
     val defaultNetworkPort: Int = NetworkAudioManager.DEFAULT_PORT
+
+    private val _featureConfig =
+        MutableStateFlow(IntercomFeatureConfig.default())
+    val featureConfig: StateFlow<IntercomFeatureConfig> =
+        _featureConfig.asStateFlow()
+
+    fun setUseVad(enabled: Boolean) {
+        _featureConfig.update {
+            it.copy(
+                useVad = enabled,
+                useVadPreRoll = if (enabled) it.useVadPreRoll else false
+            )
+        }
+    }
+
+    fun setUseOpus(enabled: Boolean) {
+        _featureConfig.update {
+            it.copy(
+                useOpus = enabled,
+                useJitterBuffer = if (enabled) it.useJitterBuffer else false
+            )
+        }
+    }
+
+    fun setUseJitterBuffer(enabled: Boolean) {
+        _featureConfig.update { it.copy(useJitterBuffer = enabled) }
+    }
+
+    fun setUseVadPreRoll(enabled: Boolean) {
+        _featureConfig.update { it.copy(useVadPreRoll = enabled) }
+    }
+
+    fun resetFeatureConfig() {
+        _featureConfig.value = IntercomFeatureConfig.default()
+    }
 
     private val _inputDevices =
         MutableStateFlow<List<AudioDeviceInfo>>(emptyList())
@@ -165,7 +202,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 communicationDeviceId = deviceId,
                 peerHost = peerHost.trim(),
                 localPort = NetworkAudioManager.DEFAULT_PORT,
-                peerPort = NetworkAudioManager.DEFAULT_PORT
+                peerPort = NetworkAudioManager.DEFAULT_PORT,
+                featureConfig = _featureConfig.value
             )
         } catch (e: SecurityException) {
             _routingError.value =

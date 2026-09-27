@@ -15,6 +15,7 @@ import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.material3.Button
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.LinearProgressIndicator
+import androidx.compose.material3.Switch
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
@@ -27,6 +28,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.bmxt.riderintercom.intercom.audio.AudioDebugState
+import com.bmxt.riderintercom.intercom.audio.IntercomFeatureConfig
 import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import kotlin.math.roundToInt
 
@@ -35,6 +37,7 @@ fun AudioTestScreen(
     audioRunning: Boolean,
     voiceDetected: Boolean,
     debugState: AudioDebugState,
+    featureConfig: IntercomFeatureConfig,
     microphonePermission: Boolean,
     inputDevices: List<AudioDeviceInfo>,
     outputDevices: List<AudioDeviceInfo>,
@@ -51,6 +54,11 @@ fun AudioTestScreen(
     onSelectLegacyBluetoothSco: () -> Unit,
     onSelectCommunicationDevice: (AudioDeviceInfo) -> Unit,
     onClearCommunicationDevice: () -> Unit,
+    onSetUseVad: (Boolean) -> Unit,
+    onSetUseOpus: (Boolean) -> Unit,
+    onSetUseJitterBuffer: (Boolean) -> Unit,
+    onSetUseVadPreRoll: (Boolean) -> Unit,
+    onResetFeatureConfig: () -> Unit,
     onStart: () -> Unit,
     onStartIntercom: (String) -> Unit,
     onStop: () -> Unit
@@ -66,10 +74,14 @@ fun AudioTestScreen(
             Spacer(modifier = Modifier.height(8.dp))
             Text(if (audioRunning) "Audio: Running" else "Audio: Stopped")
             if (audioRunning) {
-                Text(
-                    if (voiceDetected) "Voice activity: Speech detected"
-                    else "Voice activity: Silence / listening"
-                )
+                if (featureConfig.useVad) {
+                    Text(
+                        if (voiceDetected) "Voice activity: Speech detected"
+                        else "Voice activity: Silence / listening"
+                    )
+                } else {
+                    Text("VAD: Disabled • transmitting audio continuously")
+                }
             }
             Text(if (microphonePermission) "Microphone: Permission granted" else "Microphone: Permission required")
 
@@ -91,17 +103,68 @@ fun AudioTestScreen(
                 )
             }
 
+            Text("Pipeline: ${featureConfig.pipelineDescription}")
+            Text("Features are applied when the intercom starts. Use the same settings on both phones.")
+            Text("VAD: ${if (featureConfig.useVad) "ON" else "OFF"} | Opus: ${if (featureConfig.useOpus) "ON" else "OFF"} | Jitter: ${if (featureConfig.effectiveJitterBuffer) "ON" else "OFF"} | Pre-roll: ${if (featureConfig.effectiveVadPreRoll) "ON" else "OFF"}")
+
+            Spacer(modifier = Modifier.height(12.dp))
+            Text("Experimental network features", style = MaterialTheme.typography.titleMedium)
+            FeatureSwitchRow(
+                title = "VAD",
+                description = "Gate transmission based on voice activity.",
+                checked = featureConfig.useVad,
+                enabled = !audioRunning,
+                onCheckedChange = onSetUseVad
+            )
+            FeatureSwitchRow(
+                title = "Opus",
+                description = "Compress voice before UDP transmission.",
+                checked = featureConfig.useOpus,
+                enabled = !audioRunning,
+                onCheckedChange = onSetUseOpus
+            )
+            FeatureSwitchRow(
+                title = "Jitter buffer",
+                description = if (featureConfig.useOpus) "Buffer Opus packets to smooth network timing." else "Available when Opus is enabled.",
+                checked = featureConfig.useJitterBuffer,
+                enabled = !audioRunning && featureConfig.useOpus,
+                onCheckedChange = onSetUseJitterBuffer
+            )
+            FeatureSwitchRow(
+                title = "VAD pre-roll",
+                description = if (featureConfig.useVad) "Send a short audio lead-in when speech starts." else "Available when VAD is enabled.",
+                checked = featureConfig.useVadPreRoll,
+                enabled = !audioRunning && featureConfig.useVad,
+                onCheckedChange = onSetUseVadPreRoll
+            )
+            Button(
+                onClick = onResetFeatureConfig,
+                enabled = !audioRunning
+            ) {
+                Text("Reset to simple PCM test")
+            }
+
+            Spacer(modifier = Modifier.height(12.dp))
             Text("Network: ${debugState.networkState}")
             Text("TX packets: ${debugState.packetsSent}   RX packets: ${debugState.packetsReceived}")
             Text("TX bytes: ${debugState.bytesSent}   RX bytes: ${debugState.bytesReceived}")
-            Text("Encoded: ${debugState.encodedFrames}   No output: ${debugState.encodeNoOutputFrames}")
-            Text("Decoded: ${debugState.decodedFrames}   No output: ${debugState.decodeNoOutputFrames}")
+            if (featureConfig.useOpus) {
+                Text("Encoded: ${debugState.encodedFrames}   No output: ${debugState.encodeNoOutputFrames}")
+                Text("Decoded: ${debugState.decodedFrames}   No output: ${debugState.decodeNoOutputFrames}")
+            } else {
+                Text("Codec: PCM (no Opus encoding/decoding)")
+            }
             Text("Malformed UDP: ${debugState.malformedPackets}")
             Text("Last TX payload: ${debugState.lastSentPayloadBytes} B")
             Text("Last RX payload: ${debugState.lastReceivedPayloadBytes} B, seq=${debugState.lastReceivedSequence}")
-            Text("Jitter buffer: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets} (target ${debugState.jitterTargetPackets})")
-            Text("Estimated lost: ${debugState.estimatedLostPackets}   Late: ${debugState.latePackets}   Overflow drop: ${debugState.overflowDroppedPackets}")
-            Text("Jitter resyncs: ${debugState.jitterResyncs}   Playback underruns: ${debugState.playbackUnderruns}")
+            if (featureConfig.effectiveJitterBuffer) {
+                Text("Jitter buffer: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets} (target ${debugState.jitterTargetPackets})")
+                Text("Estimated lost: ${debugState.estimatedLostPackets}   Late: ${debugState.latePackets}   Overflow drop: ${debugState.overflowDroppedPackets}")
+                Text("Jitter resyncs: ${debugState.jitterResyncs}   Playback underruns: ${debugState.playbackUnderruns}")
+            } else {
+                Text("Jitter buffer: OFF")
+                Text("Direct RX queue: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets}   Dropped: ${debugState.overflowDroppedPackets}")
+            }
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")
             Text("AudioRecord: ${debugState.audioRecordState}   AudioTrack: ${debugState.audioTrackState}")
@@ -118,7 +181,7 @@ fun AudioTestScreen(
             Spacer(modifier = Modifier.height(12.dp))
 
             Text("Two-phone Wi-Fi test", style = MaterialTheme.typography.titleMedium)
-            Text("16 kHz mono PCM → VAD → Opus → UDP → 40 ms jitter buffer → Opus → AudioTrack")
+            Text(featureConfig.pipelineDescription)
             Text("UDP port: $defaultNetworkPort")
             if (localIpv4Addresses.isEmpty()) {
                 Text("Local IPv4: not available")
@@ -232,4 +295,26 @@ private fun DiagnosticMeter(label: String, levelDb: Float) {
         progress = progress,
         modifier = Modifier.fillMaxWidth()
     )
+}
+
+
+@Composable
+private fun FeatureSwitchRow(
+    title: String,
+    description: String,
+    checked: Boolean,
+    enabled: Boolean,
+    onCheckedChange: (Boolean) -> Unit
+) {
+    Row(modifier = Modifier.fillMaxWidth()) {
+        Column(modifier = Modifier.weight(1f)) {
+            Text(title, style = MaterialTheme.typography.bodyLarge)
+            Text(description, style = MaterialTheme.typography.bodySmall)
+        }
+        Switch(
+            checked = checked,
+            onCheckedChange = onCheckedChange,
+            enabled = enabled
+        )
+    }
 }

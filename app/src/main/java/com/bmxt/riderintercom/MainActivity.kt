@@ -35,6 +35,8 @@ class MainActivity : ComponentActivity() {
                 viewModel.voiceDetected.collectAsState()
             val debugState by
                 viewModel.debugState.collectAsState()
+            val featureConfig by
+                viewModel.featureConfig.collectAsState()
             val inputDevices by
                 viewModel.inputDevices.collectAsState()
             val outputDevices by
@@ -169,6 +171,7 @@ class MainActivity : ComponentActivity() {
                         audioRunning = audioRunning,
                         voiceDetected = voiceDetected,
                         debugState = debugState,
+                        featureConfig = featureConfig,
                         microphonePermission = hasMicrophonePermission,
                         inputDevices = inputDevices,
                         outputDevices = outputDevices,
@@ -199,6 +202,11 @@ class MainActivity : ComponentActivity() {
                         onClearCommunicationDevice = {
                             viewModel.clearCommunicationDevice()
                         },
+                        onSetUseVad = viewModel::setUseVad,
+                        onSetUseOpus = viewModel::setUseOpus,
+                        onSetUseJitterBuffer = viewModel::setUseJitterBuffer,
+                        onSetUseVadPreRoll = viewModel::setUseVadPreRoll,
+                        onResetFeatureConfig = viewModel::resetFeatureConfig,
                         localIpv4Addresses = localIpv4Addresses,
                         defaultNetworkPort = viewModel.defaultNetworkPort,
                         onStart = {

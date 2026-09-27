@@ -1,31 +1,28 @@
-# Rider Intercom — Opus/Jitter update
+# Rider Intercom - Network Audio Baseline
 
-This version keeps the existing foreground-service and Android 11 Bluetooth SCO behavior and changes only the network-audio timing path.
+## Current test mode
+The default network configuration intentionally disables all optional processing:
 
-## Network playback
+- VAD: OFF
+- Opus: OFF
+- Jitter buffer: OFF
+- VAD pre-roll: OFF
 
-- UDP receive callback only validates/queues packets.
-- Added `OpusJitterBuffer` with a 2-packet (40 ms) target and 6-packet maximum.
-- Added short reorder/loss wait (20 ms).
-- Large sequence jumps are treated as VAD silence gaps and resynchronized instead of being counted as hundreds of lost packets.
-- Opus decoding and `AudioTrack.write()` run on a dedicated playback coroutine.
-- Playback uses a 20 ms cadence without an extra fixed 20 ms delay after `AudioTrack.write()`.
-- Playback underruns/loss/late/overflow/resync counters are exposed in diagnostics.
+The active network path is:
 
-## VAD
+`16 kHz mono PCM -> UDP -> 16 kHz mono PCM -> AudioTrack`
 
-- Existing energy/RMS VAD is retained.
-- Added 100 ms pre-roll so the start of a word is less likely to be clipped.
-- Silence is still not transmitted as a normal Opus voice packet.
+This is the baseline used to isolate the current audio-quality/latency problem.
 
-## Noise reduction
+## Configurable network features
+The UI exposes session-level switches for:
 
-No explicit `NoiseSuppressor`, `AcousticEchoCanceler`, or `AutomaticGainControl` was added in this step. Capture remains `VOICE_COMMUNICATION`, so device/vendor audio processing may still be applied by Android.
+- VAD
+- Opus
+- Jitter buffer (available with Opus)
+- VAD pre-roll (available with VAD)
 
+The settings apply when the intercom is started. Stop the intercom before changing them, then start it again. Both phones should use the same settings.
 
-## Latency-focused behavior
-
-- Playback uses a dedicated coroutine, so UDP reception is never blocked by `AudioTrack.write()`.
-- Small sequence gaps are waited on briefly and then represented by one 20 ms silent frame.
-- Large sequence jumps are treated as VAD silence gaps and resynchronized.
-- Jitter target is 40 ms to avoid adding an unnecessarily large fixed delay.
+## Important project files preserved
+This update is built from the user's latest source and preserves existing project files, including Git/Gradle wrapper files such as `.gitignore`, `app/.gitignore`, `app/proguard-rules.pro`, `gradlew`, `gradlew.bat`, and `gradle/wrapper/*`.
