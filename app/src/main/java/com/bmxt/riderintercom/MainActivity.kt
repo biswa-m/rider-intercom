@@ -2,7 +2,6 @@ package com.bmxt.riderintercom
 
 import android.Manifest
 import android.content.pm.PackageManager
-import android.media.AudioDeviceInfo
 import android.os.Build
 import android.os.Bundle
 import androidx.activity.ComponentActivity
@@ -11,244 +10,148 @@ import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Surface
-import androidx.compose.runtime.LaunchedEffect
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.collectAsState
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.viewmodel.compose.viewModel
-import com.bmxt.riderintercom.ui.screens.AudioTestScreen
+import com.bmxt.riderintercom.lab.core.LabCsvWriter
+import com.bmxt.riderintercom.lab.core.LabTestResult
+import com.bmxt.riderintercom.lab.tests.WifiDirectDummyTestRunner
+import com.bmxt.riderintercom.lab.ui.screens.WifiDirectLabScreen
+import com.bmxt.riderintercom.lab.wifidirect.WifiDirectManager
 
 class MainActivity : ComponentActivity() {
+    private lateinit var wifiDirectManager: WifiDirectManager
+    private val testRunner = WifiDirectDummyTestRunner()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        wifiDirectManager = WifiDirectManager(this)
+        wifiDirectManager.start()
 
         setContent {
-            val viewModel: MainViewModel = viewModel()
+            val wifiState by wifiDirectManager.state.collectAsState()
+            val devices by wifiDirectManager.devices.collectAsState()
+            var testing by remember { mutableStateOf(false) }
+            var progressText by remember { mutableStateOf("Ready") }
+            var tx by remember { mutableStateOf(0L) }
+            var rx by remember { mutableStateOf(0L) }
+            var result by remember { mutableStateOf<LabTestResult?>(null) }
+            var results by remember { mutableStateOf(emptyList<LabTestResult>()) }
 
-            val audioRunning by
-                viewModel.audioRunning.collectAsState()
-            val voiceDetected by
-                viewModel.voiceDetected.collectAsState()
-            val debugState by
-                viewModel.debugState.collectAsState()
-            val featureConfig by
-                viewModel.featureConfig.collectAsState()
-            val inputDevices by
-                viewModel.inputDevices.collectAsState()
-            val outputDevices by
-                viewModel.outputDevices.collectAsState()
-            val communicationDevices by
-                viewModel.communicationDevices.collectAsState()
-            val legacyBluetoothHeadsets by
-                viewModel.legacyBluetoothHeadsets.collectAsState()
-            val legacyBluetoothScoActive by
-                viewModel.legacyBluetoothScoActive.collectAsState()
-            val currentCommunicationDevice by
-                viewModel.currentCommunicationDevice.collectAsState()
-            val routingError by
-                viewModel.routingError.collectAsState()
-            val pingPongState by
-                viewModel.pingPongState.collectAsState()
-
-            val localIpv4Addresses = remember {
-                viewModel.localIpv4Addresses
+            val permissionLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.RequestMultiplePermissions()
+            ) { grants ->
+                val allGranted = grants.values.all { it }
+                if (allGranted) wifiDirectManager.discover()
             }
 
-            LaunchedEffect(Unit) {
-                viewModel.refreshAudioDevices()
-            }
-
-            var hasMicrophonePermission by remember {
-                mutableStateOf(
-                    ContextCompat.checkSelfPermission(
-                        this,
-                        Manifest.permission.RECORD_AUDIO
-                    ) == PackageManager.PERMISSION_GRANTED
-                )
-            }
-
-            var hasBluetoothConnectPermission by remember {
-                mutableStateOf(
-                    Build.VERSION.SDK_INT < Build.VERSION_CODES.S ||
-                        ContextCompat.checkSelfPermission(
-                            this,
-                            Manifest.permission.BLUETOOTH_CONNECT
-                        ) == PackageManager.PERMISSION_GRANTED
-                )
-            }
-
-            var hasNotificationPermission by remember {
-                mutableStateOf(
-                    Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
-                        ContextCompat.checkSelfPermission(
-                            this,
-                            Manifest.permission.POST_NOTIFICATIONS
-                        ) == PackageManager.PERMISSION_GRANTED
-                )
-            }
-
-            var pendingIntercomPeerHost by remember {
-                mutableStateOf<String?>(null)
-            }
-
-            val notificationPermissionLauncher =
-                rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    hasNotificationPermission = granted
-
-                    // Audio can technically run without notification permission,
-                    // but ask first so the foreground-service notification remains
-                    // visible as the rider requested.
-                    pendingIntercomPeerHost?.let { peerHost ->
-                        pendingIntercomPeerHost = null
-                        viewModel.startIntercom(peerHost)
-                    } ?: viewModel.startAudio()
+            val documentLauncher = rememberLauncherForActivityResult(
+                ActivityResultContracts.CreateDocument("text/csv")
+            ) { uri ->
+                uri ?: return@rememberLauncherForActivityResult
+                if (result == null || results.isEmpty()) return@rememberLauncherForActivityResult
+                contentResolver.openOutputStream(uri)?.bufferedWriter()?.use { writer ->
+                    writer.write(LabCsvWriter.build(results))
                 }
+            }
 
-            val microphonePermissionLauncher =
-                rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    hasMicrophonePermission = granted
-
-                    if (granted) {
-                        val pendingPeer = pendingIntercomPeerHost
-                        if (
-                            Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                            !hasNotificationPermission
-                        ) {
-                            notificationPermissionLauncher.launch(
-                                Manifest.permission.POST_NOTIFICATIONS
-                            )
-                        } else {
-                            pendingIntercomPeerHost = null
-                            pendingPeer?.let(viewModel::startIntercom)
-                                ?: viewModel.startAudio()
-                        }
-                    } else {
-                        pendingIntercomPeerHost = null
-                    }
+            fun ensureWifiPermissionsThen(action: () -> Unit) {
+                val required = buildList {
+                    if (Build.VERSION.SDK_INT >= 33) add(Manifest.permission.NEARBY_WIFI_DEVICES)
+                    add(Manifest.permission.ACCESS_FINE_LOCATION)
                 }
-
-
-            val bluetoothPermissionLauncher =
-                rememberLauncherForActivityResult(
-                    ActivityResultContracts.RequestPermission()
-                ) { granted ->
-                    hasBluetoothConnectPermission = granted
-                    if (granted) {
-                        viewModel.refreshAudioDevices()
-                    }
+                val missing = required.filter {
+                    ContextCompat.checkSelfPermission(this@MainActivity, it) != PackageManager.PERMISSION_GRANTED
                 }
+                if (missing.isEmpty()) action() else permissionLauncher.launch(missing.toTypedArray())
+            }
 
-            fun startAudioWithPermissions() {
-                if (!hasMicrophonePermission) {
-                    microphonePermissionLauncher.launch(
-                        Manifest.permission.RECORD_AUDIO
-                    )
-                    return
+            DisposableEffect(Unit) {
+                onDispose {
+                    wifiDirectManager.stop()
+                    testRunner.cancel()
                 }
-
-                if (
-                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                    !hasNotificationPermission
-                ) {
-                    notificationPermissionLauncher.launch(
-                        Manifest.permission.POST_NOTIFICATIONS
-                    )
-                    return
-                }
-
-                viewModel.startAudio()
             }
 
             MaterialTheme {
                 Surface {
-                    AudioTestScreen(
-                        audioRunning = audioRunning,
-                        voiceDetected = voiceDetected,
-                        debugState = debugState,
-                        featureConfig = featureConfig,
-                        microphonePermission = hasMicrophonePermission,
-                        inputDevices = inputDevices,
-                        outputDevices = outputDevices,
-                        communicationDevices = communicationDevices,
-                        legacyBluetoothHeadsets = legacyBluetoothHeadsets,
-                        legacyBluetoothScoActive = legacyBluetoothScoActive,
-                        currentCommunicationDevice = currentCommunicationDevice,
-                        routingError = routingError,
-                        inputDeviceName = viewModel::inputDeviceName,
-                        outputDeviceName = viewModel::outputDeviceName,
-                        describeDevice = viewModel::describeDevice,
-                        onSelectLegacyBluetoothSco = {
-                            viewModel.selectLegacyBluetoothSco()
-                        },
-                        onSelectCommunicationDevice = { device ->
-                            if (
-                                Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
-                                device.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO &&
-                                !hasBluetoothConnectPermission
-                            ) {
-                                bluetoothPermissionLauncher.launch(
-                                    Manifest.permission.BLUETOOTH_CONNECT
-                                )
+                    WifiDirectLabScreen(
+                        state = wifiState,
+                        devices = devices,
+                        lastResult = result,
+                        results = results,
+                        testing = testing,
+                        progressText = progressText,
+                        tx = tx,
+                        rx = rx,
+                        onDiscover = { ensureWifiPermissionsThen(wifiDirectManager::discover) },
+                        onConnect = wifiDirectManager::connect,
+                        onDisconnect = wifiDirectManager::disconnect,
+                        onRunTest = {
+                            val ownerAddress = wifiState.groupOwnerAddress
+                            if (!wifiState.connected || ownerAddress == null) {
+                                progressText = "Wi-Fi Direct is not connected"
                             } else {
-                                viewModel.selectCommunicationDevice(device)
+                                testing = true
+                                tx = 0
+                                rx = 0
+                                progressText = "Preparing test…"
+                                val wifiResult = LabTestResult(
+                                    testName = "WIFI_DIRECT_CONNECTION",
+                                    startEpochMs = System.currentTimeMillis(),
+                                    durationMs = 0L,
+                                    txPackets = 0L,
+                                    rxPackets = 0L,
+                                    uniqueRxPackets = 0L,
+                                    duplicatePackets = 0L,
+                                    outOfOrderPackets = 0L,
+                                    sequenceGaps = 0L,
+                                    txBytes = 0L,
+                                    rxBytes = 0L,
+                                    averageInterArrivalMs = 0.0,
+                                    p95InterArrivalMs = 0.0,
+                                    maxInterArrivalMs = 0.0,
+                                    passed = wifiState.connected,
+                                    note = "Wi-Fi Direct connected; role=${if (wifiState.isGroupOwner) "GROUP_OWNER" else "CLIENT"}; peer=${wifiState.peerName ?: "unknown"}"
+                                )
+                                results = results + wifiResult
+                                testRunner.run(
+                                    peerAddressHint = ownerAddress,
+                                    isGroupOwner = wifiState.isGroupOwner,
+                                    onUpdate = { text, newTx, newRx ->
+                                        progressText = text
+                                        tx = newTx
+                                        rx = newRx
+                                    },
+                                    onComplete = { newResult ->
+                                        result = newResult
+                                        results = results + newResult
+                                        testing = false
+                                        progressText = "Test finished"
+                                    },
+                                    onError = { error ->
+                                        testing = false
+                                        progressText = "Test error: ${error.message ?: error.javaClass.simpleName}"
+                                    }
+                                )
                             }
                         },
-                        onClearCommunicationDevice = {
-                            viewModel.clearCommunicationDevice()
-                        },
-                        onSetUseVad = viewModel::setUseVad,
-                        onSetUseOpus = viewModel::setUseOpus,
-                        onSetUseJitterBuffer = viewModel::setUseJitterBuffer,
-                        onSetUseVadPreRoll = viewModel::setUseVadPreRoll,
-                        onSetUseTimestampLatencyTest = viewModel::setUseTimestampLatencyTest,
-                        onSetLatencyClockOffsetMs = viewModel::setLatencyClockOffsetMs,
-                        onSetLatencySampleEveryPackets = viewModel::setLatencySampleEveryPackets,
-                        onApplyPingPongClockOffset = viewModel::applyPingPongClockOffset,
-                        onResetFeatureConfig = viewModel::resetFeatureConfig,
-                        pingPongState = pingPongState,
-                        onStartPingPong = viewModel::startPingPong,
-                        onStopPingPong = viewModel::stopPingPong,
-                        localIpv4Addresses = localIpv4Addresses,
-                        defaultNetworkPort = viewModel.defaultNetworkPort,
-                        onStart = {
-                            startAudioWithPermissions()
-                        },
-                        onStartIntercom = { peerHost ->
-                            if (peerHost.isNotBlank()) {
-                                pendingIntercomPeerHost = peerHost.trim()
-
-                                if (!hasMicrophonePermission) {
-                                    microphonePermissionLauncher.launch(
-                                        Manifest.permission.RECORD_AUDIO
-                                    )
-                                } else if (
-                                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-                                    !hasNotificationPermission
-                                ) {
-                                    notificationPermissionLauncher.launch(
-                                        Manifest.permission.POST_NOTIFICATIONS
-                                    )
-                                } else {
-                                    val pendingPeer = pendingIntercomPeerHost
-                                    pendingIntercomPeerHost = null
-                                    pendingPeer?.let(viewModel::startIntercom)
-                                }
-                            }
-                        },
-                        onStop = {
-                            viewModel.stopAudio()
+                        onExport = {
+                            if (results.isNotEmpty()) documentLauncher.launch(LabCsvWriter.defaultFileName())
                         }
                     )
                 }
             }
         }
+    }
+
+    override fun onDestroy() {
+        wifiDirectManager.stop()
+        testRunner.cancel()
+        super.onDestroy()
     }
 }
