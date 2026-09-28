@@ -20,6 +20,12 @@ import kotlinx.coroutines.flow.asStateFlow
 import kotlin.coroutines.resume
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.cancel
 
 class WifiDirectManager(private val context: Context) {
     private val manager = context.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager
@@ -30,6 +36,13 @@ class WifiDirectManager(private val context: Context) {
     val devices: StateFlow<List<WifiP2pDevice>> = _devices.asStateFlow()
     private var registered = false
     private var lastPeerDevice: WifiP2pDevice? = null
+    private var lastPeerAddress: String? = null
+    private var localDeviceAddress: String? = null
+    private var wasConnected = false
+    private var autoReconnectEnabled = false
+    private var reconnectJob: Job? = null
+    private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
+    private val peerControlChannel = PeerControlChannel { localDeviceAddress }
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -40,6 +53,10 @@ class WifiDirectManager(private val context: Context) {
                 }
                 WifiP2pManager.WIFI_P2P_PEERS_CHANGED_ACTION -> requestPeers()
                 WifiP2pManager.WIFI_P2P_CONNECTION_CHANGED_ACTION -> requestGroupInfo()
+                WifiP2pManager.WIFI_P2P_THIS_DEVICE_CHANGED_ACTION -> {
+                    val device = intent.getParcelableExtra<WifiP2pDevice>(WifiP2pManager.EXTRA_WIFI_P2P_DEVICE)
+                    if (device != null) localDeviceAddress = device.deviceAddress
+                }
             }
         }
     }
@@ -59,6 +76,10 @@ class WifiDirectManager(private val context: Context) {
     }
 
     fun stop() {
+        reconnectJob?.cancel()
+        peerControlChannel.stop()
+        reconnectJob = null
+        scope.coroutineContext.cancel()
         if (!registered) return
         context.unregisterReceiver(receiver)
         registered = false
@@ -74,7 +95,11 @@ class WifiDirectManager(private val context: Context) {
     }
 
     fun connect(device: WifiP2pDevice) {
+        reconnectJob?.cancel()
+        reconnectJob = null
+        autoReconnectEnabled = true
         lastPeerDevice = device
+        lastPeerAddress = device.deviceAddress
         if (!hasWifiPermission()) return updateError("Wi-Fi Direct permission is not granted")
         val config = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
@@ -87,10 +112,31 @@ class WifiDirectManager(private val context: Context) {
         })
     }
 
+    /** User-initiated disconnect. The peer is explicitly told not to auto-reconnect. */
     fun disconnect() {
-        removeGroupOnce {
-            clearConnection("Disconnected")
+        autoReconnectEnabled = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        scope.launch {
+            if (_state.value.connected) {
+                peerControlChannel.sendManualDisconnect()
+            }
+            removeGroupOnce {
+                clearConnection("Disconnected", reconnecting = false)
+            }
         }
+    }
+
+    /** Cancel an automatic recovery attempt without changing an already-disconnected group. */
+    fun cancelReconnect() {
+        autoReconnectEnabled = false
+        reconnectJob?.cancel()
+        reconnectJob = null
+        _state.value = _state.value.copy(
+            reconnecting = false,
+            status = "Reconnect cancelled",
+            error = null
+        )
     }
 
     suspend fun disconnectAndWait(timeoutMs: Long = 8_000L): Long {
@@ -109,6 +155,18 @@ class WifiDirectManager(private val context: Context) {
                     }
                 })
             }
+            if (!completed && lastFailure == WifiP2pManager.BUSY) {
+                // Android 11 can report BUSY while the previous P2P transition is still
+                // being processed. The connection-change broadcast may still arrive shortly.
+                try {
+                    kotlinx.coroutines.withTimeout(2_000L) {
+                        _state.first { !it.connected }
+                    }
+                    return elapsedMs(started)
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    // Continue with the normal retry path.
+                }
+            }
             if (completed) {
                 try {
                     kotlinx.coroutines.withTimeout(timeoutMs) {
@@ -124,40 +182,140 @@ class WifiDirectManager(private val context: Context) {
         error("Disconnect failed: ${reasonText(lastFailure ?: WifiP2pManager.ERROR)}")
     }
 
-    suspend fun reconnectAndWait(timeoutMs: Long = 15_000L): Long {
-        val device = lastPeerDevice ?: _devices.value.firstOrNull()
-            ?: error("No peer device available for reconnect")
+    suspend fun reconnectAndWait(timeoutMs: Long = 30_000L): Long {
         val started = System.nanoTime()
-        var lastFailure: Int? = null
-        repeat(4) { attempt ->
-            val completed = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
-                val config = WifiP2pConfig().apply {
-                    deviceAddress = device.deviceAddress
-                    wps.setup = WpsInfo.PBC
+        autoReconnectEnabled = true
+        ensureAutoReconnectLoop()
+        try {
+            kotlinx.coroutines.withTimeout(timeoutMs) {
+                _state.first { it.connected }
+            }
+            return elapsedMs(started)
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            error("Reconnect timed out after ${timeoutMs} ms")
+        }
+    }
+
+    private fun ensureAutoReconnectLoop() {
+        if (!autoReconnectEnabled || reconnectJob?.isActive == true || _state.value.connected) return
+        reconnectJob = scope.launch {
+            var attempt = 0
+            while (autoReconnectEnabled && !_state.value.connected) {
+                attempt++
+                _state.value = _state.value.copy(
+                    reconnecting = true,
+                    status = "RECONNECTING — discovering peer (attempt $attempt)…",
+                    error = null
+                )
+
+                val address = lastPeerAddress
+                if (address != null) {
+                    discoverAndWaitForPeer(address, timeoutMs = 4_000L)
+                } else {
+                    discoverOnce()
                 }
-                manager.connect(channel, config, object : WifiP2pManager.ActionListener {
+
+                val target = findRememberedPeer(address)
+                val shouldConnect = target != null && shouldInitiateReconnect(target)
+                    if (shouldConnect) {
+                    val connected = tryConnect(target)
+                    if (connected) {
+                        reconnectJob = null
+                        return@launch
+                    }
+                }
+
+                // Give the peer time to discover us too. Both phones run this loop,
+                // so an out-of-range recovery does not depend on manually pressing
+                // Discover on the other phone.
+                delay(if (attempt < 4) 750L else 2_000L)
+            }
+            reconnectJob = null
+        }
+    }
+
+    private suspend fun tryConnect(device: WifiP2pDevice): Boolean {
+        val completed = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+            val config = WifiP2pConfig().apply {
+                deviceAddress = device.deviceAddress
+                wps.setup = WpsInfo.PBC
+            }
+            manager.connect(channel, config, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    if (continuation.isActive) continuation.resume(true)
+                }
+                override fun onFailure(reason: Int) {
+                    if (continuation.isActive) continuation.resume(false)
+                }
+            })
+        }
+        if (!completed) return false
+        return try {
+            kotlinx.coroutines.withTimeout(8_000L) {
+                _state.first { it.connected }
+            }
+            true
+        } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+            false
+        }
+    }
+
+    private fun shouldInitiateReconnect(device: WifiP2pDevice): Boolean {
+        val local = localDeviceAddress ?: return true
+        return local.compareTo(device.deviceAddress, ignoreCase = true) < 0
+    }
+
+    private suspend fun discoverOnce(): Boolean {
+        if (!hasWifiPermission()) return false
+        return kotlinx.coroutines.suspendCancellableCoroutine { continuation ->
+            manager.discoverPeers(channel, object : WifiP2pManager.ActionListener {
+                override fun onSuccess() {
+                    if (continuation.isActive) continuation.resume(true)
+                }
+                override fun onFailure(reason: Int) {
+                    if (continuation.isActive) continuation.resume(false)
+                }
+            })
+        }
+    }
+
+    private fun findRememberedPeer(address: String?): WifiP2pDevice? {
+        if (address == null) return lastPeerDevice ?: _devices.value.firstOrNull()
+        return _devices.value.firstOrNull { it.deviceAddress.equals(address, ignoreCase = true) }
+            ?: lastPeerDevice?.takeIf { it.deviceAddress.equals(address, ignoreCase = true) }
+    }
+
+    private suspend fun discoverAndWaitForPeer(address: String, timeoutMs: Long = 8_000L) {
+        if (!hasWifiPermission()) return
+        repeat(4) { attempt ->
+            val started = System.nanoTime()
+            val accepted = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+                manager.discoverPeers(channel, object : WifiP2pManager.ActionListener {
                     override fun onSuccess() {
                         if (continuation.isActive) continuation.resume(true)
                     }
                     override fun onFailure(reason: Int) {
-                        lastFailure = reason
                         if (continuation.isActive) continuation.resume(false)
                     }
                 })
             }
-            if (completed) {
+            if (accepted) {
                 try {
                     kotlinx.coroutines.withTimeout(timeoutMs) {
-                        _state.first { it.connected }
+                        _devices.first { devices ->
+                            devices.any { it.deviceAddress.equals(address, ignoreCase = true) }
+                        }
                     }
-                    return elapsedMs(started)
+                    return
                 } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
-                    // retry below
+                    // Continue with another discovery attempt.
                 }
             }
-            if (attempt < 3) delay(750L * (attempt + 1))
+            if (attempt < 3) {
+                val elapsed = elapsedMs(started)
+                delay((500L - elapsed).coerceAtLeast(250L))
+            }
         }
-        error("Reconnect failed: ${reasonText(lastFailure ?: WifiP2pManager.ERROR)}")
     }
 
     private fun removeGroupOnce(onSuccess: () -> Unit) {
@@ -183,16 +341,44 @@ class WifiDirectManager(private val context: Context) {
         if (!hasWifiPermission()) return
         manager.requestGroupInfo(channel) { group: WifiP2pGroup? ->
             if (group == null) {
-                clearConnection("Not connected")
+                peerControlChannel.stop()
+                val unexpectedLoss = wasConnected && autoReconnectEnabled
+                clearConnection(
+                    if (unexpectedLoss) "Connection lost — reconnecting…" else "Not connected",
+                    reconnecting = unexpectedLoss
+                )
+                if (unexpectedLoss) ensureAutoReconnectLoop()
+                wasConnected = false
                 return@requestGroupInfo
             }
             val owner = group.isGroupOwner
-            val peer = group.clientList.firstOrNull()
+            val peer = if (owner) group.clientList.firstOrNull() else group.owner
+            if (peer != null) {
+                lastPeerDevice = peer
+                lastPeerAddress = peer.deviceAddress
+            }
+            wasConnected = true
+            peerControlChannel.start {
+                // The peer explicitly ended this session. Do not interpret the
+                // resulting group removal as an unexpected disconnect.
+                autoReconnectEnabled = false
+                reconnectJob?.cancel()
+                reconnectJob = null
+                _state.value = _state.value.copy(
+                    reconnecting = false,
+                    status = "Peer requested disconnect",
+                    error = null
+                )
+            }
+            // Do not cancel reconnectJob here. This callback can be reached from the
+            // reconnect coroutine itself; cancelling it here would cancel the coroutine
+            // that is currently waiting for this connected state.
             _state.value = _state.value.copy(
                 connected = true,
+                reconnecting = false,
                 isGroupOwner = owner,
-                groupOwnerAddress = if (owner) "192.168.49.1" else "192.168.49.1",
-                peerName = if (owner) peer?.deviceName else "Group Owner",
+                groupOwnerAddress = "192.168.49.1",
+                peerName = peer?.deviceName ?: if (owner) "—" else "Group Owner",
                 peerAddress = peer?.deviceAddress,
                 status = if (owner) "Connected — Group Owner" else "Connected — Client",
                 error = null
@@ -200,8 +386,16 @@ class WifiDirectManager(private val context: Context) {
         }
     }
 
-    private fun clearConnection(status: String) {
-        _state.value = _state.value.copy(connected = false, isGroupOwner = false, groupOwnerAddress = null, peerAddress = null, peerName = null, status = status)
+    private fun clearConnection(status: String, reconnecting: Boolean) {
+        _state.value = _state.value.copy(
+            connected = false,
+            reconnecting = reconnecting,
+            isGroupOwner = false,
+            groupOwnerAddress = null,
+            peerAddress = null,
+            peerName = null,
+            status = status
+        )
     }
 
     private fun hasWifiPermission(): Boolean {
