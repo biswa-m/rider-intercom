@@ -28,6 +28,8 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import com.bmxt.riderintercom.intercom.audio.AudioDebugState
+import com.bmxt.riderintercom.intercom.diagnostics.PingPongTestManager
+import com.bmxt.riderintercom.ui.components.PingPongTestCard
 import com.bmxt.riderintercom.intercom.audio.IntercomFeatureConfig
 import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import kotlin.math.roundToInt
@@ -59,6 +61,9 @@ fun AudioTestScreen(
     onSetUseJitterBuffer: (Boolean) -> Unit,
     onSetUseVadPreRoll: (Boolean) -> Unit,
     onResetFeatureConfig: () -> Unit,
+    pingPongState: PingPongTestManager.State,
+    onStartPingPong: (String) -> Unit,
+    onStopPingPong: () -> Unit,
     onStart: () -> Unit,
     onStartIntercom: (String) -> Unit,
     onStop: () -> Unit
@@ -171,17 +176,6 @@ fun AudioTestScreen(
             if (featureConfig.useOpus && featureConfig.effectiveJitterBuffer) {
                 Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/6   Dropped: ${debugState.decodedPcmQueueDropped}")
             }
-            Spacer(modifier = Modifier.height(8.dp))
-            Text("Estimated voice latency", style = MaterialTheme.typography.titleSmall)
-            if (debugState.latencySamples > 0) {
-                Text("Last: ${debugState.latencyLastMs} ms   Avg: ${debugState.latencyAvgMs} ms")
-                Text("Min: ${debugState.latencyMinMs} ms   P95: ${debugState.latencyP95Ms} ms   Max: ${debugState.latencyMaxMs} ms")
-                Text("Samples: ${debugState.latencySamples} (measured at AudioTrack write)")
-                Text("Note: absolute value includes phone clock offset/skew between devices.")
-            } else {
-                Text("Waiting for received audio...")
-            }
-
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")
             Text("AudioRecord: ${debugState.audioRecordState}   AudioTrack: ${debugState.audioTrackState}")
@@ -224,6 +218,16 @@ fun AudioTestScreen(
                     enabled = peerHost.isNotBlank()
                 ) { Text("Start Two-Phone Intercom") }
             }
+
+            Spacer(modifier = Modifier.height(16.dp))
+            HorizontalDivider()
+            Spacer(modifier = Modifier.height(12.dp))
+            PingPongTestCard(
+                peerHost = peerHost,
+                state = pingPongState,
+                onStart = { onStartPingPong(peerHost) },
+                onStop = onStopPingPong
+            )
 
             Spacer(modifier = Modifier.height(12.dp))
             Text("Current communication device", style = MaterialTheme.typography.titleMedium)

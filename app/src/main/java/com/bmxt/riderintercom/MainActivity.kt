@@ -51,6 +51,8 @@ class MainActivity : ComponentActivity() {
                 viewModel.currentCommunicationDevice.collectAsState()
             val routingError by
                 viewModel.routingError.collectAsState()
+            val pingPongState by
+                viewModel.pingPongState.collectAsState()
 
             val localIpv4Addresses = remember {
                 viewModel.localIpv4Addresses
@@ -207,6 +209,9 @@ class MainActivity : ComponentActivity() {
                         onSetUseJitterBuffer = viewModel::setUseJitterBuffer,
                         onSetUseVadPreRoll = viewModel::setUseVadPreRoll,
                         onResetFeatureConfig = viewModel::resetFeatureConfig,
+                        pingPongState = pingPongState,
+                        onStartPingPong = viewModel::startPingPong,
+                        onStopPingPong = viewModel::stopPingPong,
                         localIpv4Addresses = localIpv4Addresses,
                         defaultNetworkPort = viewModel.defaultNetworkPort,
                         onStart = {

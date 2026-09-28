@@ -4,12 +4,14 @@ import android.app.Application
 import android.media.AudioDeviceInfo
 import com.bmxt.riderintercom.intercom.audio.LegacyBluetoothHeadset
 import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
 import com.bmxt.riderintercom.intercom.audio.AudioDebugState
 import com.bmxt.riderintercom.intercom.audio.AudioDeviceManager
 import com.bmxt.riderintercom.intercom.audio.IntercomAudioService
 import com.bmxt.riderintercom.intercom.audio.IntercomFeatureConfig
 import com.bmxt.riderintercom.intercom.audio.NetworkAudioManager
 import com.bmxt.riderintercom.intercom.audio.NetworkUtils
+import com.bmxt.riderintercom.intercom.diagnostics.PingPongTestManager
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -33,6 +35,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         get() = NetworkUtils.getLocalIpv4Addresses()
 
     val defaultNetworkPort: Int = NetworkAudioManager.DEFAULT_PORT
+
+    private val pingPongTestManager = PingPongTestManager()
+
+    val pingPongState: StateFlow<PingPongTestManager.State> =
+        pingPongTestManager.state
+
+    fun startPingPong(peerHost: String) {
+        pingPongTestManager.start(viewModelScope, peerHost)
+    }
+
+    fun stopPingPong() {
+        pingPongTestManager.stop()
+    }
 
     private val _featureConfig =
         MutableStateFlow(IntercomFeatureConfig.default())
@@ -229,6 +244,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         audioDeviceManager.describeDevice(device)
 
     override fun onCleared() {
+        pingPongTestManager.close()
         audioDeviceManager.close()
         // The foreground service owns the audio lifecycle.
         // Do not stop audio when the Activity/ViewModel is recreated.
