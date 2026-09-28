@@ -23,12 +23,14 @@ import com.bmxt.riderintercom.lab.core.LabTestResult
 import com.bmxt.riderintercom.lab.nearby.NearbyConnectionManager
 import com.bmxt.riderintercom.lab.nearby.NearbyDataTestRunner
 import com.bmxt.riderintercom.lab.nearby.NearbyLifecycleTestRunner
+import com.bmxt.riderintercom.lab.nearby.NearbyLatencyTestRunner
 import com.bmxt.riderintercom.lab.ui.screens.NearbyLabScreen
 
 class MainActivity : ComponentActivity() {
     private lateinit var nearbyManager: NearbyConnectionManager
     private val dataRunner = NearbyDataTestRunner()
     private val lifecycleRunner = NearbyLifecycleTestRunner()
+    private val latencyRunner = NearbyLatencyTestRunner()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -40,6 +42,8 @@ class MainActivity : ComponentActivity() {
             var dataProgress by remember { mutableStateOf("Ready") }
             var lifecycleTesting by remember { mutableStateOf(false) }
             var lifecycleProgress by remember { mutableStateOf("Ready") }
+            var latencyTesting by remember { mutableStateOf(false) }
+            var latencyProgress by remember { mutableStateOf("Ready") }
             var results by remember { mutableStateOf(emptyList<LabTestResult>()) }
             val buffer = remember { LabCsvBuffer() }
 
@@ -69,6 +73,7 @@ class MainActivity : ComponentActivity() {
                     nearbyManager.stop()
                     dataRunner.cancel()
                     lifecycleRunner.cancel()
+                    latencyRunner.cancel()
                 }
             }
 
@@ -80,6 +85,8 @@ class MainActivity : ComponentActivity() {
                         dataProgress = dataProgress,
                         lifecycleTesting = lifecycleTesting,
                         lifecycleProgress = lifecycleProgress,
+                        latencyTesting = latencyTesting,
+                        latencyProgress = latencyProgress,
                         results = results,
                         onStartAuto = { ensurePermissionsThen(nearbyManager::startAutoMode) },
                         onDiscover = { ensurePermissionsThen(nearbyManager::discover) },
@@ -127,6 +134,20 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         },
+                        onRunLatencyTest = {
+                            latencyTesting = true
+                            latencyProgress = "Starting…"
+                            latencyRunner.run(
+                                nearbyManager,
+                                onUpdate = { latencyProgress = it },
+                                onComplete = { result ->
+                                    buffer.add(result)
+                                    results = buffer.snapshot()
+                                    latencyTesting = false
+                                    latencyProgress = "Finished"
+                                }
+                            )
+                        },
                         onRunLifecycleTest = {
                             lifecycleTesting = true
                             lifecycleProgress = "Starting…"
@@ -145,6 +166,7 @@ class MainActivity : ComponentActivity() {
                         onReset = {
                             dataRunner.cancel()
                             lifecycleRunner.cancel()
+                            latencyRunner.cancel()
                             buffer.clear()
                             results = emptyList()
                             dataProgress = "Ready"
@@ -205,6 +227,7 @@ class MainActivity : ComponentActivity() {
         nearbyManager.stop()
         dataRunner.cancel()
         lifecycleRunner.cancel()
+        latencyRunner.cancel()
         super.onDestroy()
     }
 }

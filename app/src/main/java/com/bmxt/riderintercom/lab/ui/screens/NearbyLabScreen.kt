@@ -31,6 +31,8 @@ fun NearbyLabScreen(
     dataProgress: String,
     lifecycleTesting: Boolean,
     lifecycleProgress: String,
+    latencyTesting: Boolean,
+    latencyProgress: String,
     results: List<LabTestResult>,
     onStartAuto: () -> Unit,
     onDiscover: () -> Unit,
@@ -39,6 +41,7 @@ fun NearbyLabScreen(
     onRunDataTest: () -> Unit,
     onRunVoiceTest: () -> Unit,
     onRunRateSweep: () -> Unit,
+    onRunLatencyTest: () -> Unit,
     onRunLifecycleTest: () -> Unit,
     onExport: () -> Unit,
     onReset: () -> Unit
@@ -58,8 +61,8 @@ fun NearbyLabScreen(
                     Text("Event: ${state.lastEvent}")
                     state.lastError?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onStartAuto, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Auto connect") }
-                        OutlinedButton(onClick = onDiscover, enabled = !dataTesting && !lifecycleTesting) { Text("Discover") }
+                        Button(onClick = onStartAuto, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Auto connect") }
+                        OutlinedButton(onClick = onDiscover, enabled = !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Discover") }
                         OutlinedButton(onClick = onDisconnect, enabled = state.status == NearbyConnectionStatus.CONNECTED) { Text("Disconnect") }
                     }
                 }
@@ -80,7 +83,7 @@ fun NearbyLabScreen(
                         Text(peer.name)
                         Text(peer.endpointId, style = MaterialTheme.typography.bodySmall)
                     }
-                    Button(onClick = { onConnect(peer) }, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting) { Text("Connect") }
+                    Button(onClick = { onConnect(peer) }, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting) { Text("Connect") }
                 }
             }
         }
@@ -92,10 +95,20 @@ fun NearbyLabScreen(
                     Text(dataProgress)
                     Text("TX ${state.packetsSent} / RX ${state.packetsReceived}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("640B / 50pps") }
-                        OutlinedButton(onClick = onRunVoiceTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Voice size") }
+                        Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("640B / 50pps") }
+                        OutlinedButton(onClick = onRunVoiceTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Voice size") }
                     }
-                    OutlinedButton(onClick = onRunRateSweep, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Rate sweep: 10 / 25 / 50 / 100pps") }
+                    OutlinedButton(onClick = onRunRateSweep, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Rate sweep: 10 / 25 / 50 / 100pps") }
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("One-way latency test", style = MaterialTheme.typography.titleLarge)
+                    Text("Synchronized clock test using 80-byte payloads at 50 packets/sec for 10 seconds. Measures approximate sender-to-receiver latency.")
+                    Text(latencyProgress)
+                    Button(onClick = onRunLatencyTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Run latency test") }
                 }
             }
         }
@@ -105,7 +118,7 @@ fun NearbyLabScreen(
                     Text("Automatic reconnect test", style = MaterialTheme.typography.titleLarge)
                     Text("Forces a connection loss and lets Nearby Connections recover automatically.")
                     Text(lifecycleProgress)
-                    Button(onClick = onRunLifecycleTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Run 3-cycle test") }
+                    Button(onClick = onRunLifecycleTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Run 3-cycle test") }
                 }
             }
         }

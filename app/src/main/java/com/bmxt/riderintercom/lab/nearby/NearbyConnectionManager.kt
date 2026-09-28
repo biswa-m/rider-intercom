@@ -50,6 +50,11 @@ class NearbyConnectionManager(private val context: Context) {
     private val incomingInterArrivalMs = mutableListOf<Double>()
     private val incomingSeenSequences = HashSet<Long>()
     private var incomingMaxSequence = -1L
+    private var latencyTestId: String? = null
+    private var latencyTestActive = false
+    private var latencyClockOffsetMs = 0.0
+    private var latencyRx = 0L
+    private val latencySamplesMs = mutableListOf<Double>()
     private val testSignals = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<String>>()
 
     private val payloadCallback = object : PayloadCallback() {
@@ -59,6 +64,22 @@ class NearbyConnectionManager(private val context: Context) {
             val text = runCatching { String(bytes, StandardCharsets.UTF_8) }.getOrNull()
             if (text != null && text.startsWith("RITC|")) {
                 handleTestControl(text.removePrefix("RITC|"))
+                return
+            }
+            if (latencyTestActive && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'L'.code.toByte()))) {
+                val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
+                buffer.position(4)
+                buffer.int
+                val senderWallMs = buffer.long
+                val receiverWallMs = System.currentTimeMillis()
+                val oneWayMs = (receiverWallMs - (senderWallMs + latencyClockOffsetMs)).coerceAtLeast(0.0)
+                latencyRx++
+                latencySamplesMs += oneWayMs
+                _state.value = _state.value.copy(
+                    bytesReceived = _state.value.bytesReceived + bytes.size,
+                    packetsReceived = _state.value.packetsReceived + 1,
+                    lastEvent = "Latency packet: ${"%.2f".format(oneWayMs)} ms"
+                )
                 return
             }
             if (incomingTestActive && System.nanoTime() >= incomingStartAtNs && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'D'.code.toByte()))) {
@@ -256,6 +277,49 @@ class NearbyConnectionManager(private val context: Context) {
                     _state.value = _state.value.copy(lastEvent = "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps p95=${"%.2f".format(p95)}ms")
                 }
             }
+            "LAT_PREPARE" -> {
+                latencyTestId = parts.getOrNull(1)
+                latencyTestActive = false
+                latencyClockOffsetMs = 0.0
+                latencyRx = 0L
+                latencySamplesMs.clear()
+                latencyTestId?.let { id ->
+                    _state.value = _state.value.copy(lastEvent = "Prepared latency receiver: $id")
+                    sendTestControl("LAT_READY|$id")
+                }
+            }
+            "LAT_SYNC_REQ" -> {
+                val id = parts.getOrNull(1) ?: return
+                val t1 = parts.getOrNull(2)?.toLongOrNull() ?: return
+                val t2 = System.currentTimeMillis()
+                val t3 = System.currentTimeMillis()
+                sendTestControl("LAT_SYNC_RESP|$id|$t1|$t2|$t3")
+            }
+            "LAT_CONFIG" -> {
+                if (parts.getOrNull(1) == latencyTestId) {
+                    latencyClockOffsetMs = parts.getOrNull(2)?.toDoubleOrNull() ?: 0.0
+                    _state.value = _state.value.copy(lastEvent = "Latency clock offset configured: ${"%.2f".format(latencyClockOffsetMs)} ms")
+                }
+            }
+            "LAT_START" -> {
+                if (parts.getOrNull(1) == latencyTestId) {
+                    latencyTestActive = true
+                    _state.value = _state.value.copy(lastEvent = "Latency receiver active")
+                }
+            }
+            "LAT_STOP" -> {
+                if (parts.getOrNull(1) == latencyTestId) {
+                    latencyTestActive = false
+                    val id = latencyTestId ?: return
+                    val avg = latencySamplesMs.averageOrZero()
+                    val p50 = latencySamplesMs.percentile(50.0)
+                    val p95 = latencySamplesMs.percentile(95.0)
+                    val max = latencySamplesMs.maxOrNull() ?: 0.0
+                    val min = latencySamplesMs.minOrNull() ?: 0.0
+                    sendTestControl("LAT_RESULT|$id|$latencyRx|${latencySamplesMs.size}|$avg|$p50|$p95|$max|$min")
+                    _state.value = _state.value.copy(lastEvent = "Latency result sent: RX=$latencyRx avg=${"%.2f".format(avg)}ms p95=${"%.2f".format(p95)}ms")
+                }
+            }
         }
     }
 
@@ -285,6 +349,15 @@ class NearbyConnectionManager(private val context: Context) {
         incomingInterArrivalMs.clear()
         incomingSeenSequences.clear()
         incomingMaxSequence = -1L
+        resetLatencyTest()
+    }
+
+    fun resetLatencyTest() {
+        latencyTestActive = false
+        latencyTestId = null
+        latencyClockOffsetMs = 0.0
+        latencyRx = 0L
+        latencySamplesMs.clear()
     }
 
     fun forceUnexpectedDisconnectForTest() {
