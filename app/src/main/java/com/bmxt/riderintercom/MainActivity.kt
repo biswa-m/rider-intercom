@@ -24,6 +24,8 @@ import com.bmxt.riderintercom.lab.nearby.NearbyConnectionManager
 import com.bmxt.riderintercom.lab.nearby.NearbyDataTestRunner
 import com.bmxt.riderintercom.lab.nearby.NearbyLifecycleTestRunner
 import com.bmxt.riderintercom.lab.nearby.NearbyLatencyTestRunner
+import com.bmxt.riderintercom.lab.jitter.JitterBufferSimulationTestRunner
+import com.bmxt.riderintercom.lab.jitter.NearbyJitterBufferTestRunner
 import com.bmxt.riderintercom.lab.ui.screens.NearbyLabScreen
 
 class MainActivity : ComponentActivity() {
@@ -31,10 +33,13 @@ class MainActivity : ComponentActivity() {
     private val dataRunner = NearbyDataTestRunner()
     private val lifecycleRunner = NearbyLifecycleTestRunner()
     private val latencyRunner = NearbyLatencyTestRunner()
+    private val jitterSimulationRunner = JitterBufferSimulationTestRunner()
+    private val nearbyJitterRunner = NearbyJitterBufferTestRunner()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         nearbyManager = NearbyConnectionManager(this)
+        nearbyJitterRunner.attachReceiver(nearbyManager)
 
         setContent {
             val state by nearbyManager.state.collectAsState()
@@ -44,6 +49,8 @@ class MainActivity : ComponentActivity() {
             var lifecycleProgress by remember { mutableStateOf("Ready") }
             var latencyTesting by remember { mutableStateOf(false) }
             var latencyProgress by remember { mutableStateOf("Ready") }
+            var jitterTesting by remember { mutableStateOf(false) }
+            var jitterProgress by remember { mutableStateOf("Ready") }
             var results by remember { mutableStateOf(emptyList<LabTestResult>()) }
             val buffer = remember { LabCsvBuffer() }
 
@@ -71,6 +78,7 @@ class MainActivity : ComponentActivity() {
             DisposableEffect(Unit) {
                 onDispose {
                     nearbyManager.stop()
+                    nearbyJitterRunner.detachReceiver()
                     dataRunner.cancel()
                     lifecycleRunner.cancel()
                     latencyRunner.cancel()
@@ -87,6 +95,8 @@ class MainActivity : ComponentActivity() {
                         lifecycleProgress = lifecycleProgress,
                         latencyTesting = latencyTesting,
                         latencyProgress = latencyProgress,
+                        jitterTesting = jitterTesting,
+                        jitterProgress = jitterProgress,
                         results = results,
                         onStartAuto = { ensurePermissionsThen(nearbyManager::startAutoMode) },
                         onDiscover = { ensurePermissionsThen(nearbyManager::discover) },
@@ -103,7 +113,8 @@ class MainActivity : ComponentActivity() {
                                     results = buffer.snapshot()
                                     dataTesting = false
                                     dataProgress = "Finished"
-                                }
+                                },
+                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunVoiceTest = {
@@ -117,7 +128,8 @@ class MainActivity : ComponentActivity() {
                                     results = buffer.snapshot()
                                     dataTesting = false
                                     dataProgress = "Finished"
-                                }
+                                },
+                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunRateSweep = {
@@ -131,7 +143,8 @@ class MainActivity : ComponentActivity() {
                                     results = buffer.snapshot()
                                     dataTesting = false
                                     dataProgress = "Rate sweep finished"
-                                }
+                                },
+                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunLatencyTest = {
@@ -145,6 +158,29 @@ class MainActivity : ComponentActivity() {
                                     results = buffer.snapshot()
                                     latencyTesting = false
                                     latencyProgress = "Finished"
+                                }
+                            )
+                        },
+                        onRunJitterSimulation = {
+                            jitterTesting = true
+                            jitterProgress = "Starting deterministic jitter simulation…"
+                            val newResults = jitterSimulationRunner.runAll { jitterProgress = it }
+                            buffer.addAll(newResults)
+                            results = buffer.snapshot()
+                            jitterTesting = false
+                            jitterProgress = "Simulation finished"
+                        },
+                        onRunNearbyJitter = {
+                            jitterTesting = true
+                            jitterProgress = "Starting Nearby jitter test…"
+                            nearbyJitterRunner.run(
+                                nearbyManager,
+                                onUpdate = { jitterProgress = it },
+                                onComplete = { result ->
+                                    buffer.add(result)
+                                    results = buffer.snapshot()
+                                    jitterTesting = false
+                                    jitterProgress = "Nearby jitter test finished"
                                 }
                             )
                         },
@@ -162,11 +198,12 @@ class MainActivity : ComponentActivity() {
                                 }
                             )
                         },
-                        onExport = { exportCsv(buffer.build(), buffer.defaultFileName()) },
+                        onExport = { exportCsv(buffer.build(), buffer.defaultFileName(), "Export Unified CSV") },
                         onReset = {
                             dataRunner.cancel()
                             lifecycleRunner.cancel()
                             latencyRunner.cancel()
+                            nearbyJitterRunner.cancel()
                             buffer.clear()
                             results = emptyList()
                             dataProgress = "Ready"
@@ -196,14 +233,14 @@ class MainActivity : ComponentActivity() {
         ContextCompat.checkSelfPermission(this, it) == PackageManager.PERMISSION_GRANTED
     }
 
-    private fun exportCsv(content: String, fileName: String) {
+    private fun exportCsv(content: String, fileName: String, chooserTitle: String) {
         startActivityForResult(
             android.content.Intent.createChooser(
                 android.content.Intent(android.content.Intent.ACTION_CREATE_DOCUMENT).apply {
                     type = "text/csv"
                     putExtra(android.content.Intent.EXTRA_TITLE, fileName)
                 },
-                "Export Unified CSV"
+                chooserTitle
             ),
             901
         )
@@ -228,6 +265,8 @@ class MainActivity : ComponentActivity() {
         dataRunner.cancel()
         lifecycleRunner.cancel()
         latencyRunner.cancel()
+        nearbyJitterRunner.cancel()
+        nearbyJitterRunner.detachReceiver()
         super.onDestroy()
     }
 }

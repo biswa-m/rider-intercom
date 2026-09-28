@@ -33,6 +33,8 @@ fun NearbyLabScreen(
     lifecycleProgress: String,
     latencyTesting: Boolean,
     latencyProgress: String,
+    jitterTesting: Boolean,
+    jitterProgress: String,
     results: List<LabTestResult>,
     onStartAuto: () -> Unit,
     onDiscover: () -> Unit,
@@ -42,6 +44,8 @@ fun NearbyLabScreen(
     onRunVoiceTest: () -> Unit,
     onRunRateSweep: () -> Unit,
     onRunLatencyTest: () -> Unit,
+    onRunJitterSimulation: () -> Unit,
+    onRunNearbyJitter: () -> Unit,
     onRunLifecycleTest: () -> Unit,
     onExport: () -> Unit,
     onReset: () -> Unit
@@ -61,8 +65,8 @@ fun NearbyLabScreen(
                     Text("Event: ${state.lastEvent}")
                     state.lastError?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onStartAuto, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Auto connect") }
-                        OutlinedButton(onClick = onDiscover, enabled = !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Discover") }
+                        Button(onClick = onStartAuto, enabled = state.status != NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Auto connect") }
+                        OutlinedButton(onClick = onDiscover, enabled = !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Discover") }
                         OutlinedButton(onClick = onDisconnect, enabled = state.status == NearbyConnectionStatus.CONNECTED) { Text("Disconnect") }
                     }
                 }
@@ -95,10 +99,10 @@ fun NearbyLabScreen(
                     Text(dataProgress)
                     Text("TX ${state.packetsSent} / RX ${state.packetsReceived}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("640B / 50pps") }
-                        OutlinedButton(onClick = onRunVoiceTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Voice size") }
+                        Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("640B / 50pps") }
+                        OutlinedButton(onClick = onRunVoiceTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Voice size") }
                     }
-                    OutlinedButton(onClick = onRunRateSweep, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Rate sweep: 10 / 25 / 50 / 100pps") }
+                    OutlinedButton(onClick = onRunRateSweep, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Rate sweep: 10 / 25 / 50 / 100pps") }
                 }
             }
         }
@@ -108,7 +112,20 @@ fun NearbyLabScreen(
                     Text("One-way latency test", style = MaterialTheme.typography.titleLarge)
                     Text("Synchronized clock test using 80-byte payloads at 50 packets/sec for 10 seconds. Measures approximate sender-to-receiver latency.")
                     Text(latencyProgress)
-                    Button(onClick = onRunLatencyTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Run latency test") }
+                    Button(onClick = onRunLatencyTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Run latency test") }
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("Jitter buffer tests", style = MaterialTheme.typography.titleLarge)
+                    Text("Tests the jitter layer independently first, then against real Nearby packets. No audio or Opus is used.")
+                    Text(jitterProgress)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onRunJitterSimulation, enabled = !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting && !jitterTesting) { Text("Simulation") }
+                        OutlinedButton(onClick = onRunNearbyJitter, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting && !jitterTesting) { Text("Nearby test") }
+                    }
                 }
             }
         }
@@ -118,7 +135,7 @@ fun NearbyLabScreen(
                     Text("Automatic reconnect test", style = MaterialTheme.typography.titleLarge)
                     Text("Forces a connection loss and lets Nearby Connections recover automatically.")
                     Text(lifecycleProgress)
-                    Button(onClick = onRunLifecycleTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting) { Text("Run 3-cycle test") }
+                    Button(onClick = onRunLifecycleTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) { Text("Run 3-cycle test") }
                 }
             }
         }
@@ -126,7 +143,8 @@ fun NearbyLabScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Unified test log", style = MaterialTheme.typography.titleLarge)
-                    Text("Buffered rows: ${results.size}")
+                    Text("Buffered test rows: ${results.size}")
+                    Text("Packet-level traces are included in the Unified CSV")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onExport, enabled = results.isNotEmpty()) { Text("Export Unified CSV") }
                         OutlinedButton(onClick = onReset) { Text("Reset") }

@@ -13,26 +13,33 @@ import java.nio.ByteOrder
 class NearbyDataTestRunner {
     private var job: Job? = null
 
-    fun run(manager: NearbyConnectionManager, config: NearbyDataTestConfig, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit) {
+    fun run(
+        manager: NearbyConnectionManager,
+        config: NearbyDataTestConfig,
+        onUpdate: (String) -> Unit,
+        onComplete: (LabTestResult) -> Unit,
+        onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}
+    ) {
         cancel()
         job = CoroutineScope(Dispatchers.Default).launch {
-            onComplete(execute(manager, config, onUpdate))
+            val result = execute(manager, config, onUpdate, onPacketTrace)
+            onComplete(result)
         }
     }
 
-    fun runStandard(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit) =
-        run(manager, NearbyDataTestConfig("NEARBY_BYTES_10S_640B_50PPS", 640, 50), onUpdate, onComplete)
+    fun runStandard(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) =
+        run(manager, NearbyDataTestConfig("NEARBY_BYTES_10S_640B_50PPS", 640, 50), onUpdate, onComplete, onPacketTrace)
 
-    fun runVoiceSized(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit) =
-        run(manager, NearbyDataTestConfig("NEARBY_VOICE_SIZE_10S_80B_50PPS", 80, 50), onUpdate, onComplete)
+    fun runVoiceSized(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) =
+        run(manager, NearbyDataTestConfig("NEARBY_VOICE_SIZE_10S_80B_50PPS", 80, 50), onUpdate, onComplete, onPacketTrace)
 
-    fun runRateSweep(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (List<LabTestResult>) -> Unit) {
+    fun runRateSweep(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (List<LabTestResult>) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) {
         cancel()
         job = CoroutineScope(Dispatchers.Default).launch {
             val results = mutableListOf<LabTestResult>()
             for (rate in listOf(10, 25, 50, 100)) {
                 if (job?.isActive != true) break
-                val result = execute(manager, NearbyDataTestConfig("NEARBY_RATE_${rate}PPS_640B_10S", 640, rate), onUpdate)
+                val result = execute(manager, NearbyDataTestConfig("NEARBY_RATE_${rate}PPS_640B_10S", 640, rate), onUpdate, onPacketTrace)
                 results += result
                 delay(750L)
             }
@@ -40,7 +47,12 @@ class NearbyDataTestRunner {
         }
     }
 
-    private suspend fun execute(manager: NearbyConnectionManager, config: NearbyDataTestConfig, onUpdate: (String) -> Unit): LabTestResult {
+    private suspend fun execute(
+        manager: NearbyConnectionManager,
+        config: NearbyDataTestConfig,
+        onUpdate: (String) -> Unit,
+        onPacketTrace: (List<NearbyPacketTrace>) -> Unit
+    ): LabTestResult {
         val testId = "${config.name}-${System.currentTimeMillis()}"
         val started = System.currentTimeMillis()
         manager.resetCounters()
@@ -62,7 +74,8 @@ class NearbyDataTestRunner {
         delay(config.startDelayMs)
 
         val testStart = System.currentTimeMillis()
-        val end = System.nanoTime() + config.durationMs * 1_000_000L
+        val testStartNs = System.nanoTime()
+        val end = testStartNs + config.durationMs * 1_000_000L
         val intervalNs = 1_000_000_000L / config.packetsPerSecond
         val payload = ByteArray(config.payloadSize)
         var seq = 0
@@ -73,7 +86,7 @@ class NearbyDataTestRunner {
             ByteBuffer.wrap(payload).order(ByteOrder.BIG_ENDIAN).apply {
                 putInt(MAGIC)
                 putInt(seq++)
-                putLong(System.nanoTime())
+                putLong(System.nanoTime() - testStartNs)
             }
             if (manager.sendRaw(payload)) sent++
             nextSendNs += intervalNs
@@ -83,12 +96,16 @@ class NearbyDataTestRunner {
 
         delay(1_000L)
         val resultWait = manager.prepareTestSignal("RESULT|$testId")
+        val traceDoneWait = manager.prepareTestSignal("TRACE_DONE|$testId")
         if (!manager.sendTestControl("STOP|$testId|$sent")) {
             return failure(testStart, config, "Could not send STOP; senderTX=$sent")
         }
-        onUpdate("Transmission finished. Waiting for receiver result…")
+        onUpdate("Transmission finished. Waiting for receiver result… Packet-level trace is being finalized.")
         val resultMessage = withTimeoutOrNull(5_000L) { resultWait.await() }
             ?: return failure(testStart, config, "Timed out waiting for receiver RESULT; senderTX=$sent")
+        val traceReceived = withTimeoutOrNull(10_000L) { traceDoneWait.await() } != null
+        if (traceReceived) onPacketTrace(manager.getRemotePacketTrace())
+        else onUpdate("Receiver result received, but packet trace transfer timed out")
 
         val parts = resultMessage.split('|')
         val rx = parts.getOrNull(2)?.toLongOrNull() ?: 0L
