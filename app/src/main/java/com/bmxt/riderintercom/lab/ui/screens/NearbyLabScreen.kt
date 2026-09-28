@@ -37,6 +37,8 @@ fun NearbyLabScreen(
     onConnect: (NearbyPeer) -> Unit,
     onDisconnect: () -> Unit,
     onRunDataTest: () -> Unit,
+    onRunVoiceTest: () -> Unit,
+    onRunRateSweep: () -> Unit,
     onRunLifecycleTest: () -> Unit,
     onExport: () -> Unit,
     onReset: () -> Unit
@@ -86,10 +88,14 @@ fun NearbyLabScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("10-second data test", style = MaterialTheme.typography.titleLarge)
-                    Text("Sends 640-byte byte payloads at 50 packets/sec. Run it on both phones for a basic transport test.")
+                    Text("One phone starts a synchronized 10-second test. The other phone receives automatically. 640 bytes × 50 packets/sec.")
                     Text(dataProgress)
                     Text("TX ${state.packetsSent} / RX ${state.packetsReceived}")
-                    Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Run data test") }
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Button(onClick = onRunDataTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("640B / 50pps") }
+                        OutlinedButton(onClick = onRunVoiceTest, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Voice size") }
+                    }
+                    OutlinedButton(onClick = onRunRateSweep, enabled = state.status == NearbyConnectionStatus.CONNECTED && !dataTesting && !lifecycleTesting) { Text("Rate sweep: 10 / 25 / 50 / 100pps") }
                 }
             }
         }

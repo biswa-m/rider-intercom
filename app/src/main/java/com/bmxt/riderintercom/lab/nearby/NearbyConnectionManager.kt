@@ -45,6 +45,11 @@ class NearbyConnectionManager(private val context: Context) {
     private var incomingGaps = 0L
     private var incomingOutOfOrder = 0L
     private var incomingBytes = 0L
+    private var incomingStartAtNs = 0L
+    private var incomingLastArrivalNs = 0L
+    private val incomingInterArrivalMs = mutableListOf<Double>()
+    private val incomingSeenSequences = HashSet<Long>()
+    private var incomingMaxSequence = -1L
     private val testSignals = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<String>>()
 
     private val payloadCallback = object : PayloadCallback() {
@@ -56,25 +61,38 @@ class NearbyConnectionManager(private val context: Context) {
                 handleTestControl(text.removePrefix("RITC|"))
                 return
             }
-            if (incomingTestActive && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'D'.code.toByte()))) {
+            if (incomingTestActive && System.nanoTime() >= incomingStartAtNs && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'D'.code.toByte()))) {
+                val nowNs = System.nanoTime()
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
                 buffer.position(4)
                 val sequence = buffer.int.toLong()
-                buffer.long // sender timestamp, reserved for future latency measurement
+                buffer.long // sender timestamp reserved for a future synchronized-clock latency measurement
                 incomingRx++
                 incomingBytes += bytes.size
+                if (incomingLastArrivalNs != 0L) {
+                    incomingInterArrivalMs += (nowNs - incomingLastArrivalNs) / 1_000_000.0
+                }
+                incomingLastArrivalNs = nowNs
                 when {
-                    sequence < incomingExpectedSeq -> incomingDuplicates++
+                    incomingSeenSequences.contains(sequence) -> incomingDuplicates++
                     sequence > incomingExpectedSeq -> {
                         incomingGaps += sequence - incomingExpectedSeq
                         incomingExpectedSeq = sequence + 1
                         incomingUnique++
+                        incomingSeenSequences += sequence
+                    }
+                    sequence == incomingExpectedSeq -> {
+                        incomingUnique++
+                        incomingExpectedSeq++
+                        incomingSeenSequences += sequence
                     }
                     else -> {
                         incomingUnique++
-                        incomingExpectedSeq++
+                        incomingOutOfOrder++
+                        incomingSeenSequences += sequence
                     }
                 }
+                incomingMaxSequence = maxOf(incomingMaxSequence, sequence)
                 _state.value = _state.value.copy(
                     bytesReceived = _state.value.bytesReceived + bytes.size,
                     packetsReceived = _state.value.packetsReceived + 1,
@@ -209,6 +227,11 @@ class NearbyConnectionManager(private val context: Context) {
                 incomingGaps = 0L
                 incomingOutOfOrder = 0L
                 incomingBytes = 0L
+                incomingStartAtNs = 0L
+                incomingLastArrivalNs = 0L
+                incomingInterArrivalMs.clear()
+                incomingSeenSequences.clear()
+                incomingMaxSequence = -1L
                 incomingTestId?.let { id ->
                     _state.value = _state.value.copy(lastEvent = "Prepared synchronized receiver: $id")
                     sendTestControl("READY|$id")
@@ -216,16 +239,21 @@ class NearbyConnectionManager(private val context: Context) {
             }
             "START" -> {
                 if (parts.getOrNull(1) == incomingTestId) {
+                    val delayMs = parts.getOrNull(2)?.toLongOrNull() ?: 1_500L
+                    incomingStartAtNs = System.nanoTime() + delayMs * 1_000_000L
                     incomingTestActive = true
-                    _state.value = _state.value.copy(lastEvent = "Synchronized receiver started")
+                    _state.value = _state.value.copy(lastEvent = "Receiver scheduled start in ${delayMs} ms")
                 }
             }
             "STOP" -> {
                 if (parts.getOrNull(1) == incomingTestId) {
                     incomingTestActive = false
                     val id = incomingTestId ?: return
-                    sendTestControl("RESULT|$id|$incomingRx|$incomingUnique|$incomingDuplicates|$incomingGaps|$incomingOutOfOrder|$incomingBytes")
-                    _state.value = _state.value.copy(lastEvent = "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps")
+                    val avg = incomingInterArrivalMs.averageOrZero()
+                    val p95 = incomingInterArrivalMs.percentile(95.0)
+                    val max = incomingInterArrivalMs.maxOrNull() ?: 0.0
+                    sendTestControl("RESULT|$id|$incomingRx|$incomingUnique|$incomingDuplicates|$incomingGaps|$incomingOutOfOrder|$incomingBytes|$avg|$p95|$max|$incomingMaxSequence")
+                    _state.value = _state.value.copy(lastEvent = "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps p95=${"%.2f".format(p95)}ms")
                 }
             }
         }
@@ -242,7 +270,22 @@ class NearbyConnectionManager(private val context: Context) {
         return true
     }
 
-    fun resetCounters() { _state.value = _state.value.copy(bytesSent = 0, bytesReceived = 0, packetsSent = 0, packetsReceived = 0) }
+    fun resetCounters() {
+        _state.value = _state.value.copy(bytesSent = 0, bytesReceived = 0, packetsSent = 0, packetsReceived = 0)
+        incomingTestActive = false
+        incomingExpectedSeq = 0L
+        incomingRx = 0L
+        incomingUnique = 0L
+        incomingDuplicates = 0L
+        incomingGaps = 0L
+        incomingOutOfOrder = 0L
+        incomingBytes = 0L
+        incomingStartAtNs = 0L
+        incomingLastArrivalNs = 0L
+        incomingInterArrivalMs.clear()
+        incomingSeenSequences.clear()
+        incomingMaxSequence = -1L
+    }
 
     fun forceUnexpectedDisconnectForTest() {
         autoMode = true
@@ -297,4 +340,16 @@ class NearbyConnectionManager(private val context: Context) {
     }
 
     private fun event(message: String) { _state.value = _state.value.copy(lastEvent = message) }
+
+    private fun List<Double>.averageOrZero(): Double = if (isEmpty()) 0.0 else average()
+    private fun List<Double>.percentile(percent: Double): Double {
+        if (isEmpty()) return 0.0
+        val sorted = sorted()
+        val index = ((percent / 100.0) * (sorted.size - 1)).coerceIn(0.0, (sorted.size - 1).toDouble())
+        val lower = index.toInt()
+        val upper = kotlin.math.ceil(index).toInt()
+        if (lower == upper) return sorted[lower]
+        val fraction = index - lower
+        return sorted[lower] + (sorted[upper] - sorted[lower]) * fraction
+    }
     }

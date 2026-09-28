@@ -88,7 +88,7 @@ class MainActivity : ComponentActivity() {
                         onRunDataTest = {
                             dataTesting = true
                             dataProgress = "Starting…"
-                            dataRunner.run(
+                            dataRunner.runStandard(
                                 nearbyManager,
                                 onUpdate = { dataProgress = it },
                                 onComplete = { result ->
@@ -96,6 +96,34 @@ class MainActivity : ComponentActivity() {
                                     results = buffer.snapshot()
                                     dataTesting = false
                                     dataProgress = "Finished"
+                                }
+                            )
+                        },
+                        onRunVoiceTest = {
+                            dataTesting = true
+                            dataProgress = "Starting voice-sized test…"
+                            dataRunner.runVoiceSized(
+                                nearbyManager,
+                                onUpdate = { dataProgress = it },
+                                onComplete = { result ->
+                                    buffer.add(result)
+                                    results = buffer.snapshot()
+                                    dataTesting = false
+                                    dataProgress = "Finished"
+                                }
+                            )
+                        },
+                        onRunRateSweep = {
+                            dataTesting = true
+                            dataProgress = "Starting rate sweep…"
+                            dataRunner.runRateSweep(
+                                nearbyManager,
+                                onUpdate = { dataProgress = it },
+                                onComplete = { newResults ->
+                                    buffer.addAll(newResults)
+                                    results = buffer.snapshot()
+                                    dataTesting = false
+                                    dataProgress = "Rate sweep finished"
                                 }
                             )
                         },

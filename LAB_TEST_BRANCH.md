@@ -1,46 +1,71 @@
-# Rider Intercom — Test Branch
+# Rider Intercom - Nearby Connections Test Branch
 
-This branch is deliberately rebuilt from the network layer upward.
+This branch is a connectivity/transport lab for Google Nearby Connections. It intentionally does not contain the production audio pipeline.
 
-## Rules
+## Current transport tests
 
-- Existing production intercom code is not used.
-- Every layer gets its own package and files.
-- Runtime tests are automated and produce measurable results.
-- A later layer must not hide failures in an earlier layer.
-- Production architecture is created only after the test layers are proven.
+### Synchronized 10-second byte test
 
-## Current layer
+Start the test on one connected phone only. The runner coordinates both phones:
 
-### Layer 1 — Wi-Fi Direct + UDP dummy data
+`PREPARE -> READY -> START(delay) -> DATA -> drain -> STOP -> RESULT`
 
-1. Grant Wi-Fi Direct permissions.
-2. Discover the other phone.
-3. Connect using Android Wi-Fi Direct.
-4. Both phones press `Run 10-second test`.
-5. A small TCP control handshake synchronizes the two phones.
-6. Both phones send 50 UDP packets/sec for 10 seconds.
-7. Each phone receives and records packets.
-8. Sequence integrity and arrival timing are measured.
-9. Results are exportable as one combined CSV.
+The receiver automatically records sequence integrity and inter-arrival timing. No button is required on the receiving phone.
 
-No microphone, AudioRecord, AudioTrack, Opus, VAD, or jitter buffer is involved.
+Default test:
 
-## Future layers
+- 640-byte payload
+- 50 packets/sec
+- 10 seconds
+- 1.5-second coordinated start delay
 
-1. Wi-Fi Direct
-2. UDP dummy data
-3. UDP protocol / sequencing
-4. Synthetic PCM transport
-5. Opus encode transport
-6. Opus decode
-7. Audio capture
-8. Audio playback
-9. Jitter buffer
-10. Full intercom
+### Voice-sized test
 
-Each future layer should add new files and tests rather than modifying older proven layers unless a deliberate protocol change is required.
+- 80-byte payload
+- 50 packets/sec
+- 10 seconds
 
+This approximates the size/rate range of a small Opus voice frame stream while retaining the same transport diagnostics.
 
-## Layer 1.5 — Wi-Fi Direct connection lifecycle
-The lab includes an automated 3-cycle explicit disconnect/reconnect test. It measures disconnect and reconnect completion time and retries transient Wi-Fi Direct BUSY/ERROR responses. Physical out-of-range recovery remains a manual test because it requires moving devices; the app should later record loss detection and reconnection when that scenario is exercised.
+### Rate sweep
+
+Runs four independent 10-second tests at:
+
+- 10 pps
+- 25 pps
+- 50 pps
+- 100 pps
+
+Each uses 640-byte payloads.
+
+## Receiver diagnostics
+
+Each synchronized test records:
+
+- transmitted packets
+- received packets
+- unique packets
+- duplicates
+- out-of-order packets
+- observed sequence gaps
+- transmitted/received bytes
+- average inter-arrival time
+- P95 inter-arrival time
+- maximum inter-arrival time
+- maximum received sequence
+- approximate received throughput
+
+The sender waits briefly after transmission before requesting the receiver result so already-submitted Nearby payloads have time to arrive.
+
+## Connection behavior
+
+Nearby Connections remains responsible for the connection layer. Auto Connect remains enabled and is intentionally left unchanged while transport testing is being completed.
+
+Manual peer Connect and any STATUS_OUT_OF_ORDER_API_CALL issue are deliberately not part of this transport-test change.
+
+## Unified CSV
+
+All completed tests are stored in the existing shared CSV buffer.
+
+- **Export Unified CSV** exports the buffer.
+- **Reset** clears the buffer.
