@@ -48,6 +48,7 @@ class NearbyConnectionManager(private val context: Context) {
     private var incomingBytes = 0L
     private var incomingStartAtNs = 0L
     private var incomingLastArrivalNs = 0L
+    private var incomingLastCallbackNs = 0L
     private val incomingInterArrivalMs = mutableListOf<Double>()
     private val incomingSeenSequences = HashSet<Long>()
     private val incomingPacketTrace = java.util.Collections.synchronizedList(mutableListOf<NearbyPacketTrace>())
@@ -64,6 +65,7 @@ class NearbyConnectionManager(private val context: Context) {
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
+            val callbackStartNs = System.nanoTime()
             if (payload.type != Payload.Type.BYTES) return
             val bytes = payload.asBytes() ?: return
             val text = runCatching { String(bytes, StandardCharsets.UTF_8) }.getOrNull()
@@ -91,6 +93,9 @@ class NearbyConnectionManager(private val context: Context) {
                 return
             }
             if (incomingTestActive && System.nanoTime() >= incomingStartAtNs && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'D'.code.toByte()))) {
+                val callbackElapsedMs = if (incomingStartAtNs == 0L) 0.0 else (callbackStartNs - incomingStartAtNs) / 1_000_000.0
+                val callbackInterArrivalMs = if (incomingLastCallbackNs == 0L) 0.0 else (callbackStartNs - incomingLastCallbackNs) / 1_000_000.0
+                incomingLastCallbackNs = callbackStartNs
                 val nowNs = System.nanoTime()
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
                 buffer.position(4)
@@ -101,6 +106,7 @@ class NearbyConnectionManager(private val context: Context) {
                 val receiverElapsedMs = if (incomingStartAtNs == 0L) 0.0 else (nowNs - incomingStartAtNs) / 1_000_000.0
                 val senderElapsedMs = senderElapsedNs / 1_000_000.0
                 val interArrivalMs = if (incomingLastArrivalNs == 0L) 0.0 else (nowNs - incomingLastArrivalNs) / 1_000_000.0
+                val callbackProcessingMs = (nowNs - callbackStartNs) / 1_000_000.0
                 incomingLastArrivalNs = nowNs
                 if (interArrivalMs > 0.0) incomingInterArrivalMs += interArrivalMs
                 val alreadySeen = incomingSeenSequences.contains(sequence)
@@ -129,8 +135,11 @@ class NearbyConnectionManager(private val context: Context) {
                     testId = incomingTestId ?: "",
                     sequence = sequence,
                     senderElapsedMs = senderElapsedMs,
+                    callbackElapsedMs = callbackElapsedMs,
                     receiverElapsedMs = receiverElapsedMs,
+                    callbackInterArrivalMs = callbackInterArrivalMs,
                     interArrivalMs = interArrivalMs,
+                    callbackProcessingMs = callbackProcessingMs,
                     sequenceDelta = sequenceDelta,
                     outOfOrder = isOutOfOrder,
                     duplicate = alreadySeen,
@@ -292,6 +301,7 @@ class NearbyConnectionManager(private val context: Context) {
                 incomingBytes = 0L
                 incomingStartAtNs = 0L
                 incomingLastArrivalNs = 0L
+                incomingLastCallbackNs = 0L
                 incomingInterArrivalMs.clear()
                 incomingSeenSequences.clear()
                 incomingPacketTrace.clear()
@@ -402,6 +412,7 @@ class NearbyConnectionManager(private val context: Context) {
         incomingBytes = 0L
         incomingStartAtNs = 0L
         incomingLastArrivalNs = 0L
+        incomingLastCallbackNs = 0L
         incomingInterArrivalMs.clear()
         incomingSeenSequences.clear()
         incomingPacketTrace.clear()

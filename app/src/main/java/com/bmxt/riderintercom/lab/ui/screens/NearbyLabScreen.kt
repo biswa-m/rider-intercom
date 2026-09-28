@@ -154,6 +154,7 @@ fun NearbyLabScreen(
                         HorizontalDivider()
                         Text("Receiver packet trace", style = MaterialTheme.typography.titleMedium)
                         Text("Rows recorded on this receiving phone: ${state.incomingPacketTraceRows}")
+                        Text("Trace timestamps include the earliest onPayloadReceived callback timestamp and the later trace-record timestamp, so we can distinguish Nearby delivery bursts from processing inside our app.", style = MaterialTheme.typography.bodySmall)
                         state.receiverPacketTraceFileName?.let { fileName ->
                             Text("Saved locally: $fileName", style = MaterialTheme.typography.bodySmall)
                         }

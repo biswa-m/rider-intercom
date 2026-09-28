@@ -13,8 +13,11 @@ object NearbyPacketTraceCsvWriter {
         "receive_order",
         "sequence",
         "sender_elapsed_ms",
+        "callback_elapsed_ms",
         "receiver_elapsed_ms",
+        "callback_inter_arrival_ms",
         "inter_arrival_ms",
+        "callback_processing_ms",
         "sequence_delta",
         "packet_out_of_order",
         "packet_duplicate"
@@ -40,8 +43,11 @@ object NearbyPacketTraceCsvWriter {
                     trace.receiveOrder.toString(),
                     trace.sequence.toString(),
                     "%.3f".format(Locale.US, trace.senderElapsedMs),
+                    "%.3f".format(Locale.US, trace.callbackElapsedMs),
                     "%.3f".format(Locale.US, trace.receiverElapsedMs),
+                    "%.3f".format(Locale.US, trace.callbackInterArrivalMs),
                     "%.3f".format(Locale.US, trace.interArrivalMs),
+                    "%.3f".format(Locale.US, trace.callbackProcessingMs),
                     trace.sequenceDelta.toString(),
                     trace.outOfOrder.toString(),
                     trace.duplicate.toString()

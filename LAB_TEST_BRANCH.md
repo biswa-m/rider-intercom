@@ -69,3 +69,8 @@ All completed tests are stored in the existing shared CSV buffer.
 
 - **Export Unified CSV** exports the buffer.
 - **Reset** clears the buffer.
+
+
+## Nearby callback timing instrumentation
+
+Receiver packet traces now record both the timestamp at entry to `PayloadCallback.onPayloadReceived()` and the timestamp when the packet trace record is created. The CSV also includes callback-to-callback inter-arrival and callback processing duration. This is intended to determine whether observed burstiness is already present at Nearby callback delivery or is introduced by application-side processing.
