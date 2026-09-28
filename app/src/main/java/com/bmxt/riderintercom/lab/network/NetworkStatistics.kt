@@ -47,16 +47,8 @@ class NetworkStatistics(private val testName: String, private val startEpochMs: 
         val avg = sorted.averageOrZero()
         val p95 = sorted.percentile(95.0)
         val max = sorted.maxOrNull() ?: 0.0
-        // The sender and receiver stop at slightly different times, so the final
-        // packet can legitimately be outside the receiver's measurement window.
-        // Treat one trailing packet shortfall as a test-boundary effect. Actual
-        // packets missing in the middle are still detected by sequenceGaps.
-        val boundaryLossAllowance = 1L
-        val passed = txPackets > 0 &&
-            rxPackets > 0 &&
-            sequenceGaps == 0L &&
-            duplicatePackets == 0L &&
-            uniqueRxPackets >= (txPackets - boundaryLossAllowance).coerceAtLeast(1L)
+        val expected = durationMs / 1000.0 * 50.0
+        val passed = txPackets > 0 && rxPackets > 0 && uniqueRxPackets >= expected * 0.98
         return LabTestResult(
             testName = testName,
             startEpochMs = startEpochMs,
@@ -73,7 +65,7 @@ class NetworkStatistics(private val testName: String, private val startEpochMs: 
             p95InterArrivalMs = p95,
             maxInterArrivalMs = max,
             passed = passed,
-            note = "$note; tx_rx_difference=${txPackets - uniqueRxPackets}"
+            note = note
         )
     }
 

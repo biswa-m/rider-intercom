@@ -1,33 +1,16 @@
 package com.bmxt.riderintercom.lab.core
 
-/**
- * Shared in-memory buffer for every lab test run.
- * The buffer is intentionally process-local and is cleared by the Reset action.
- */
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
+
 class LabCsvBuffer {
-    private val entries = mutableListOf<LabTestResult>()
-
-    @Synchronized
-    fun add(result: LabTestResult) {
-        entries += result
-    }
-
-    @Synchronized
-    fun addAll(results: Collection<LabTestResult>) {
-        entries += results
-    }
-
-    @Synchronized
-    fun snapshot(): List<LabTestResult> = entries.toList()
-
-    @Synchronized
-    fun clear() {
-        entries.clear()
-    }
-
-    @Synchronized
-    fun isEmpty(): Boolean = entries.isEmpty()
-
-    @Synchronized
-    fun size(): Int = entries.size
+    private val rows = mutableListOf<LabTestResult>()
+    fun add(result: LabTestResult) { rows += result }
+    fun addAll(results: List<LabTestResult>) { rows += results }
+    fun clear() { rows.clear() }
+    fun snapshot(): List<LabTestResult> = rows.toList()
+    fun isEmpty(): Boolean = rows.isEmpty()
+    fun build(): String = LabCsvWriter.build(snapshot())
+    fun defaultFileName(): String = "rider-intercom-lab-${SimpleDateFormat("yyyyMMdd-HHmmss", Locale.US).format(Date())}.csv"
 }

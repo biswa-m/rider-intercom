@@ -20,44 +20,25 @@ class WifiDirectLifecycleTestRunner {
     ) {
         job?.cancel()
         job = scope.launch {
-            val results = mutableListOf<WifiDirectLifecycleResult>()
             try {
+                val results = mutableListOf<WifiDirectLifecycleResult>()
                 repeat(cycles) { index ->
                     val cycle = index + 1
-                    var disconnectMs = -1L
-                    var reconnectMs = -1L
-                    try {
-                        onUpdate("Cycle $cycle/$cycles — disconnecting…")
-                        disconnectMs = manager.disconnectAndWait()
-                        delay(1_000L)
-
-                        onUpdate("Cycle $cycle/$cycles — waiting for automatic peer discovery and reconnect…")
-                        reconnectMs = manager.reconnectAndWait()
-                        val result = WifiDirectLifecycleResult(
-                            cycle = cycle,
-                            disconnectMs = disconnectMs,
-                            reconnectMs = reconnectMs,
-                            passed = true,
-                            note = "Connection restored after explicit disconnect"
-                        )
-                        results += result
-                        onUpdate("Cycle $cycle/$cycles — PASS (disconnect ${disconnectMs} ms, reconnect ${reconnectMs} ms)")
-                        delay(1_000L)
-                    } catch (t: Throwable) {
-                        val failure = WifiDirectLifecycleResult(
-                            cycle = cycle,
-                            disconnectMs = disconnectMs,
-                            reconnectMs = reconnectMs,
-                            passed = false,
-                            note = t.message ?: t.javaClass.simpleName
-                        )
-                        results += failure
-                        onUpdate("Cycle $cycle/$cycles — FAIL: ${failure.note}")
-                        // Stop here. A failed cycle means the precondition for the next
-                        // cycle (a connected peer) is not guaranteed.
-                        onComplete(results)
-                        return@launch
-                    }
+                    onUpdate("Cycle $cycle/$cycles — disconnecting…")
+                    val disconnectMs = manager.disconnectAndWait()
+                    delay(700L)
+                    onUpdate("Cycle $cycle/$cycles — reconnecting…")
+                    val reconnectMs = manager.reconnectAndWait()
+                    val result = WifiDirectLifecycleResult(
+                        cycle = cycle,
+                        disconnectMs = disconnectMs,
+                        reconnectMs = reconnectMs,
+                        passed = true,
+                        note = "Connection restored after explicit disconnect"
+                    )
+                    results += result
+                    onUpdate("Cycle $cycle/$cycles — PASS (disconnect ${disconnectMs} ms, reconnect ${reconnectMs} ms)")
+                    delay(700L)
                 }
                 onComplete(results)
             } catch (t: Throwable) {

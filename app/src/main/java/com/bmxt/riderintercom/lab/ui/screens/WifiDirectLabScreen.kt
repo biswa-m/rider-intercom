@@ -42,8 +42,7 @@ fun WifiDirectLabScreen(
     lifecycleProgress: String,
     lifecycleResults: List<WifiDirectLifecycleResult>,
     onRunLifecycleTest: () -> Unit,
-    onExport: () -> Unit,
-    onReset: () -> Unit
+    onExport: () -> Unit
 ) {
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(16.dp),
@@ -58,21 +57,13 @@ fun WifiDirectLabScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("1. Wi-Fi Direct", style = MaterialTheme.typography.titleLarge)
                     Text("Status: ${state.status}")
-                    if (state.reconnecting) {
-                        Text("Automatic recovery is active — keep both phones within Wi-Fi Direct range.")
-                    }
                     state.error?.let { Text("Error: $it", color = MaterialTheme.colorScheme.error) }
                     Text("Role: ${if (state.isGroupOwner) "Group Owner" else "Client"}")
                     Text("Group owner: ${state.groupOwnerAddress ?: "—"}")
                     Text("Peer: ${state.peerName ?: "—"}")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onDiscover, enabled = !testing) { Text("Discover") }
-                        OutlinedButton(
-                            onClick = onDisconnect,
-                            enabled = (state.connected || state.reconnecting) && !testing
-                        ) {
-                            Text(if (state.reconnecting) "Cancel reconnect" else "Disconnect")
-                        }
+                        OutlinedButton(onClick = onDisconnect, enabled = state.connected && !testing) { Text("Disconnect") }
                     }
                 }
             }
@@ -111,7 +102,7 @@ fun WifiDirectLabScreen(
             Card(Modifier.fillMaxWidth()) {
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("3. Connection lifecycle test", style = MaterialTheme.typography.titleLarge)
-                    Text("Runs 3 disconnect → automatic reconnect cycles. Both phones should have this app open; the peer also participates in discovery automatically.")
+                    Text("Runs 3 explicit disconnect → reconnect cycles. This tests recovery after a user-initiated connection teardown.")
                     Text(lifecycleProgress)
                     lifecycleResults.forEach { r ->
                         Text("Cycle ${r.cycle}: ${if (r.passed) "PASS" else "FAIL"} — disconnect ${r.disconnectMs} ms, reconnect ${r.reconnectMs} ms")
@@ -136,23 +127,7 @@ fun WifiDirectLabScreen(
                         Text("Max interval: ${"%.2f".format(result.maxInterArrivalMs)} ms")
                         Text("Gaps: ${result.sequenceGaps}, duplicates: ${result.duplicatePackets}, out-of-order: ${result.outOfOrderPackets}")
                         HorizontalDivider()
-                    }
-                }
-            }
-        }
-        item {
-            Card(Modifier.fillMaxWidth()) {
-                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("Test log", style = MaterialTheme.typography.titleLarge)
-                    Text("Buffered test runs: ${results.size}")
-                    Text("All completed test results are kept in one in-memory CSV buffer until Reset.")
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Button(onClick = onExport, enabled = results.isNotEmpty()) {
-                            Text("Export Unified CSV")
-                        }
-                        OutlinedButton(onClick = onReset, enabled = results.isNotEmpty()) {
-                            Text("Reset")
-                        }
+                        OutlinedButton(onClick = onExport) { Text("Export CSV") }
                     }
                 }
             }
