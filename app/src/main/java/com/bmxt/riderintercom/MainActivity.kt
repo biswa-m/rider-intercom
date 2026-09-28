@@ -20,12 +20,15 @@ import androidx.core.content.ContextCompat
 import com.bmxt.riderintercom.lab.core.LabCsvWriter
 import com.bmxt.riderintercom.lab.core.LabTestResult
 import com.bmxt.riderintercom.lab.tests.WifiDirectDummyTestRunner
+import com.bmxt.riderintercom.lab.tests.WifiDirectLifecycleResult
+import com.bmxt.riderintercom.lab.tests.WifiDirectLifecycleTestRunner
 import com.bmxt.riderintercom.lab.ui.screens.WifiDirectLabScreen
 import com.bmxt.riderintercom.lab.wifidirect.WifiDirectManager
 
 class MainActivity : ComponentActivity() {
     private lateinit var wifiDirectManager: WifiDirectManager
     private val testRunner = WifiDirectDummyTestRunner()
+    private val lifecycleRunner = WifiDirectLifecycleTestRunner()
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -41,6 +44,9 @@ class MainActivity : ComponentActivity() {
             var rx by remember { mutableStateOf(0L) }
             var result by remember { mutableStateOf<LabTestResult?>(null) }
             var results by remember { mutableStateOf(emptyList<LabTestResult>()) }
+            var lifecycleTesting by remember { mutableStateOf(false) }
+            var lifecycleProgress by remember { mutableStateOf("Ready") }
+            var lifecycleResults by remember { mutableStateOf(emptyList<WifiDirectLifecycleResult>()) }
 
             val permissionLauncher = rememberLauncherForActivityResult(
                 ActivityResultContracts.RequestMultiplePermissions()
@@ -74,6 +80,7 @@ class MainActivity : ComponentActivity() {
                 onDispose {
                     wifiDirectManager.stop()
                     testRunner.cancel()
+                    lifecycleRunner.cancel()
                 }
             }
 
@@ -140,6 +147,49 @@ class MainActivity : ComponentActivity() {
                                 )
                             }
                         },
+                        lifecycleTesting = lifecycleTesting,
+                        lifecycleProgress = lifecycleProgress,
+                        lifecycleResults = lifecycleResults,
+                        onRunLifecycleTest = {
+                            lifecycleTesting = true
+                            lifecycleProgress = "Preparing lifecycle test…"
+                            lifecycleResults = emptyList()
+                            lifecycleRunner.run(
+                                manager = wifiDirectManager,
+                                cycles = 3,
+                                onUpdate = { lifecycleProgress = it },
+                                onComplete = { newResults ->
+                                    lifecycleResults = newResults
+                                    val labRows = newResults.map { lifecycle ->
+                                        LabTestResult(
+                                            testName = "WIFI_DIRECT_LIFECYCLE_CYCLE_${lifecycle.cycle}",
+                                            startEpochMs = System.currentTimeMillis(),
+                                            durationMs = lifecycle.disconnectMs + lifecycle.reconnectMs,
+                                            txPackets = 0L,
+                                            rxPackets = 0L,
+                                            uniqueRxPackets = 0L,
+                                            duplicatePackets = 0L,
+                                            outOfOrderPackets = 0L,
+                                            sequenceGaps = 0L,
+                                            txBytes = 0L,
+                                            rxBytes = 0L,
+                                            averageInterArrivalMs = 0.0,
+                                            p95InterArrivalMs = 0.0,
+                                            maxInterArrivalMs = 0.0,
+                                            passed = lifecycle.passed,
+                                            note = "disconnect_ms=${lifecycle.disconnectMs}; reconnect_ms=${lifecycle.reconnectMs}; ${lifecycle.note}"
+                                        )
+                                    }
+                                    results = results + labRows
+                                    lifecycleTesting = false
+                                    lifecycleProgress = "Lifecycle test finished"
+                                },
+                                onError = { error ->
+                                    lifecycleTesting = false
+                                    lifecycleProgress = "Lifecycle test error: ${error.message ?: error.javaClass.simpleName}"
+                                }
+                            )
+                        },
                         onExport = {
                             if (results.isNotEmpty()) documentLauncher.launch(LabCsvWriter.defaultFileName())
                         }
@@ -152,6 +202,7 @@ class MainActivity : ComponentActivity() {
     override fun onDestroy() {
         wifiDirectManager.stop()
         testRunner.cancel()
+        lifecycleRunner.cancel()
         super.onDestroy()
     }
 }

@@ -6,7 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
-import android.net.wifi.p2p.WpsInfo
+import android.net.wifi.WpsInfo
 import android.net.wifi.p2p.WifiP2pConfig
 import android.net.wifi.p2p.WifiP2pDevice
 import android.net.wifi.p2p.WifiP2pDeviceList
@@ -17,6 +17,9 @@ import androidx.core.content.ContextCompat
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import kotlin.coroutines.resume
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.first
 
 class WifiDirectManager(private val context: Context) {
     private val manager = context.getSystemService(Context.WIFI_P2P_SERVICE) as WifiP2pManager
@@ -26,6 +29,7 @@ class WifiDirectManager(private val context: Context) {
     private val _devices = MutableStateFlow<List<WifiP2pDevice>>(emptyList())
     val devices: StateFlow<List<WifiP2pDevice>> = _devices.asStateFlow()
     private var registered = false
+    private var lastPeerDevice: WifiP2pDevice? = null
 
     private val receiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context?, intent: Intent?) {
@@ -70,6 +74,7 @@ class WifiDirectManager(private val context: Context) {
     }
 
     fun connect(device: WifiP2pDevice) {
+        lastPeerDevice = device
         if (!hasWifiPermission()) return updateError("Wi-Fi Direct permission is not granted")
         val config = WifiP2pConfig().apply {
             deviceAddress = device.deviceAddress
@@ -83,11 +88,86 @@ class WifiDirectManager(private val context: Context) {
     }
 
     fun disconnect() {
+        removeGroupOnce {
+            clearConnection("Disconnected")
+        }
+    }
+
+    suspend fun disconnectAndWait(timeoutMs: Long = 8_000L): Long {
+        val started = System.nanoTime()
+        var lastFailure: Int? = null
+        repeat(4) { attempt ->
+            if (!_state.value.connected) return elapsedMs(started)
+            val completed = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+                manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        if (continuation.isActive) continuation.resume(true)
+                    }
+                    override fun onFailure(reason: Int) {
+                        lastFailure = reason
+                        if (continuation.isActive) continuation.resume(false)
+                    }
+                })
+            }
+            if (completed) {
+                try {
+                    kotlinx.coroutines.withTimeout(timeoutMs) {
+                        _state.first { !it.connected }
+                    }
+                    return elapsedMs(started)
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    // retry below
+                }
+            }
+            if (attempt < 3) delay(500L * (attempt + 1))
+        }
+        error("Disconnect failed: ${reasonText(lastFailure ?: WifiP2pManager.ERROR)}")
+    }
+
+    suspend fun reconnectAndWait(timeoutMs: Long = 15_000L): Long {
+        val device = lastPeerDevice ?: _devices.value.firstOrNull()
+            ?: error("No peer device available for reconnect")
+        val started = System.nanoTime()
+        var lastFailure: Int? = null
+        repeat(4) { attempt ->
+            val completed = kotlinx.coroutines.suspendCancellableCoroutine<Boolean> { continuation ->
+                val config = WifiP2pConfig().apply {
+                    deviceAddress = device.deviceAddress
+                    wps.setup = WpsInfo.PBC
+                }
+                manager.connect(channel, config, object : WifiP2pManager.ActionListener {
+                    override fun onSuccess() {
+                        if (continuation.isActive) continuation.resume(true)
+                    }
+                    override fun onFailure(reason: Int) {
+                        lastFailure = reason
+                        if (continuation.isActive) continuation.resume(false)
+                    }
+                })
+            }
+            if (completed) {
+                try {
+                    kotlinx.coroutines.withTimeout(timeoutMs) {
+                        _state.first { it.connected }
+                    }
+                    return elapsedMs(started)
+                } catch (_: kotlinx.coroutines.TimeoutCancellationException) {
+                    // retry below
+                }
+            }
+            if (attempt < 3) delay(750L * (attempt + 1))
+        }
+        error("Reconnect failed: ${reasonText(lastFailure ?: WifiP2pManager.ERROR)}")
+    }
+
+    private fun removeGroupOnce(onSuccess: () -> Unit) {
         manager.removeGroup(channel, object : WifiP2pManager.ActionListener {
-            override fun onSuccess() = clearConnection("Disconnected")
+            override fun onSuccess() = onSuccess()
             override fun onFailure(reason: Int) = updateError("Disconnect failed: ${reasonText(reason)}")
         })
     }
+
+    private fun elapsedMs(startedNs: Long): Long = (System.nanoTime() - startedNs) / 1_000_000L
 
     private fun requestPeers() {
         if (!hasWifiPermission()) return

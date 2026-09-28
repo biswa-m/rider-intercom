@@ -40,3 +40,7 @@ No microphone, AudioRecord, AudioTrack, Opus, VAD, or jitter buffer is involved.
 10. Full intercom
 
 Each future layer should add new files and tests rather than modifying older proven layers unless a deliberate protocol change is required.
+
+
+## Layer 1.5 — Wi-Fi Direct connection lifecycle
+The lab includes an automated 3-cycle explicit disconnect/reconnect test. It measures disconnect and reconnect completion time and retries transient Wi-Fi Direct BUSY/ERROR responses. Physical out-of-range recovery remains a manual test because it requires moving devices; the app should later record loss detection and reconnection when that scenario is exercised.

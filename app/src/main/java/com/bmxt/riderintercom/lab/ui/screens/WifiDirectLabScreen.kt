@@ -22,6 +22,7 @@ import androidx.compose.ui.Modifier
 import androidx.compose.ui.unit.dp
 import com.bmxt.riderintercom.lab.core.LabTestResult
 import com.bmxt.riderintercom.lab.wifidirect.WifiDirectState
+import com.bmxt.riderintercom.lab.tests.WifiDirectLifecycleResult
 
 @Composable
 fun WifiDirectLabScreen(
@@ -37,6 +38,10 @@ fun WifiDirectLabScreen(
     onConnect: (WifiP2pDevice) -> Unit,
     onDisconnect: () -> Unit,
     onRunTest: () -> Unit,
+    lifecycleTesting: Boolean,
+    lifecycleProgress: String,
+    lifecycleResults: List<WifiDirectLifecycleResult>,
+    onRunLifecycleTest: () -> Unit,
     onExport: () -> Unit
 ) {
     LazyColumn(
@@ -90,6 +95,22 @@ fun WifiDirectLabScreen(
                     Text("TX: $tx    RX: $rx")
                     Text(progressText)
                     Button(onClick = onRunTest, enabled = state.connected && !testing) { Text("Run 10-second test") }
+                }
+            }
+        }
+        item {
+            Card(Modifier.fillMaxWidth()) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("3. Connection lifecycle test", style = MaterialTheme.typography.titleLarge)
+                    Text("Runs 3 explicit disconnect → reconnect cycles. This tests recovery after a user-initiated connection teardown.")
+                    Text(lifecycleProgress)
+                    lifecycleResults.forEach { r ->
+                        Text("Cycle ${r.cycle}: ${if (r.passed) "PASS" else "FAIL"} — disconnect ${r.disconnectMs} ms, reconnect ${r.reconnectMs} ms")
+                    }
+                    Button(
+                        onClick = onRunLifecycleTest,
+                        enabled = state.connected && !testing && !lifecycleTesting
+                    ) { Text("Run 3-cycle test") }
                 }
             }
         }
