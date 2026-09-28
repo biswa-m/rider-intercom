@@ -48,6 +48,7 @@ fun NearbyLabScreen(
     onRunNearbyJitter: () -> Unit,
     onRunLifecycleTest: () -> Unit,
     onExport: () -> Unit,
+    onExportReceiverTrace: () -> Unit,
     onReset: () -> Unit
 ) {
     LazyColumn(Modifier.fillMaxSize().padding(16.dp), verticalArrangement = Arrangement.spacedBy(12.dp)) {
@@ -144,10 +145,21 @@ fun NearbyLabScreen(
                 Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("Unified test log", style = MaterialTheme.typography.titleLarge)
                     Text("Buffered test rows: ${results.size}")
-                    Text("Packet-level traces are included in the Unified CSV")
+                    Text("Unified CSV contains test summaries only.")
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                         Button(onClick = onExport, enabled = results.isNotEmpty()) { Text("Export Unified CSV") }
                         OutlinedButton(onClick = onReset) { Text("Reset") }
+                    }
+                    if (state.incomingPacketTraceRows > 0) {
+                        HorizontalDivider()
+                        Text("Receiver packet trace", style = MaterialTheme.typography.titleMedium)
+                        Text("Rows recorded on this receiving phone: ${state.incomingPacketTraceRows}")
+                        state.receiverPacketTraceFileName?.let { fileName ->
+                            Text("Saved locally: $fileName", style = MaterialTheme.typography.bodySmall)
+                        }
+                        Button(onClick = onExportReceiverTrace, enabled = !dataTesting && !latencyTesting && !lifecycleTesting && !jitterTesting) {
+                            Text("Export Receiver Packet Trace CSV")
+                        }
                     }
                     HorizontalDivider()
                     results.takeLast(10).forEach { r ->

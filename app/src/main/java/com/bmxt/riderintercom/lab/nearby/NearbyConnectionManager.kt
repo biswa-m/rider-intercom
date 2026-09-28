@@ -17,6 +17,7 @@ import java.nio.ByteOrder
 import java.nio.charset.StandardCharsets
 import com.google.android.gms.nearby.connection.DiscoveryOptions
 import com.google.android.gms.nearby.connection.Strategy
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -25,7 +26,6 @@ class NearbyConnectionManager(private val context: Context) {
     companion object {
         const val SERVICE_ID = "com.bmxt.riderintercom.nearby.lab"
         private const val MAX_DISCOVERED = 20
-        private const val TRACE_CHUNK_MAX_CHARS = 7000
     }
 
     private val identity = NearbyIdentityStore(context)
@@ -51,10 +51,6 @@ class NearbyConnectionManager(private val context: Context) {
     private val incomingInterArrivalMs = mutableListOf<Double>()
     private val incomingSeenSequences = HashSet<Long>()
     private val incomingPacketTrace = java.util.Collections.synchronizedList(mutableListOf<NearbyPacketTrace>())
-    private val remotePacketTrace = java.util.Collections.synchronizedList(mutableListOf<NearbyPacketTrace>())
-    private var remoteTraceTestId: String? = null
-    private var remoteTraceExpectedChunks = 0
-    private val remoteTraceChunks = java.util.concurrent.ConcurrentHashMap<Int, String>()
     private var incomingReceiveOrder = 0L
     private var incomingMaxSequence = -1L
     private var latencyTestId: String? = null
@@ -140,6 +136,7 @@ class NearbyConnectionManager(private val context: Context) {
                     duplicate = alreadySeen,
                     receiveOrder = incomingReceiveOrder++
                 )
+                _state.value = _state.value.copy(incomingPacketTraceRows = incomingPacketTrace.size)
                 incomingMaxSequence = maxOf(incomingMaxSequence, sequence)
                 _state.value = _state.value.copy(
                     bytesReceived = _state.value.bytesReceived + bytes.size,
@@ -298,6 +295,7 @@ class NearbyConnectionManager(private val context: Context) {
                 incomingInterArrivalMs.clear()
                 incomingSeenSequences.clear()
                 incomingPacketTrace.clear()
+                _state.value = _state.value.copy(incomingPacketTraceRows = 0, receiverPacketTraceFileName = null)
                 incomingReceiveOrder = 0L
                 incomingMaxSequence = -1L
                 incomingTestId?.let { id ->
@@ -321,48 +319,17 @@ class NearbyConnectionManager(private val context: Context) {
                     val p95 = incomingInterArrivalMs.percentile(95.0)
                     val max = incomingInterArrivalMs.maxOrNull() ?: 0.0
                     sendTestControl("RESULT|$id|$incomingRx|$incomingUnique|$incomingDuplicates|$incomingGaps|$incomingOutOfOrder|$incomingBytes|$avg|$p95|$max|$incomingMaxSequence")
-                    sendIncomingPacketTrace(id)
-                    _state.value = _state.value.copy(lastEvent = "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps p95=${"%.2f".format(p95)}ms; trace transfer started")
+                    val traceFile = NearbyPacketTraceCsvWriter.writeToAppStorage(context, getIncomingPacketTrace(), id)
+                    _state.value = _state.value.copy(
+                        lastError = if (traceFile == null) "Could not save receiver packet trace CSV" else null,
+                        receiverPacketTraceFileName = traceFile?.name,
+                        lastEvent = if (traceFile != null) {
+                            "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps p95=${"%.2f".format(p95)}ms; packet trace saved locally (${incomingPacketTrace.size} rows)"
+                        } else {
+                            "Receiver result sent: RX=$incomingRx unique=$incomingUnique gaps=$incomingGaps p95=${"%.2f".format(p95)}ms; packet trace save failed"
+                        }
+                    )
                 }
-            }
-            "TRACE_BEGIN" -> {
-                val id = parts.getOrNull(1) ?: return
-                remoteTraceTestId = id
-                remoteTraceExpectedChunks = parts.getOrNull(3)?.toIntOrNull() ?: 0
-                remoteTraceChunks.clear()
-                remotePacketTrace.clear()
-            }
-            "TRACE_CHUNK" -> {
-                val id = parts.getOrNull(1) ?: return
-                if (id != remoteTraceTestId) return
-                val index = parts.getOrNull(2)?.toIntOrNull() ?: return
-                remoteTraceChunks[index] = parts.drop(3).joinToString("|")
-            }
-            "TRACE_DONE" -> {
-                val id = parts.getOrNull(1) ?: return
-                if (id != remoteTraceTestId) return
-                remotePacketTrace.clear()
-                remoteTraceChunks.toSortedMap().values.forEach { chunk ->
-                    chunk.split(';').forEach { line ->
-                        val fields = line.split(',')
-                        if (fields.size != 8) return@forEach
-                        val trace = NearbyPacketTrace(
-                            testId = id,
-                            receiveOrder = fields[0].toLongOrNull() ?: return@forEach,
-                            sequence = fields[1].toLongOrNull() ?: return@forEach,
-                            senderElapsedMs = fields[2].toDoubleOrNull() ?: return@forEach,
-                            receiverElapsedMs = fields[3].toDoubleOrNull() ?: return@forEach,
-                            interArrivalMs = fields[4].toDoubleOrNull() ?: return@forEach,
-                            sequenceDelta = fields[5].toLongOrNull() ?: return@forEach,
-                            outOfOrder = fields[6].toBooleanStrictOrNull() ?: false,
-                            duplicate = fields[7].toBooleanStrictOrNull() ?: false
-                        )
-                        remotePacketTrace += trace
-                    }
-                }
-                completeTestSignal("TRACE_DONE|$id")
-                remoteTraceChunks.clear()
-                remoteTraceExpectedChunks = 0
             }
             "LAT_PREPARE" -> {
                 latencyTestId = parts.getOrNull(1)
@@ -410,36 +377,6 @@ class NearbyConnectionManager(private val context: Context) {
         }
     }
 
-    private fun sendIncomingPacketTrace(testId: String) {
-        val traces = getIncomingPacketTrace()
-        val chunkLines = mutableListOf<String>()
-        val chunks = mutableListOf<String>()
-        var current = StringBuilder()
-        traces.forEach { trace ->
-            val line = listOf(
-                trace.receiveOrder, trace.sequence,
-                "%.3f".format(java.util.Locale.US, trace.senderElapsedMs),
-                "%.3f".format(java.util.Locale.US, trace.receiverElapsedMs),
-                "%.3f".format(java.util.Locale.US, trace.interArrivalMs),
-                trace.sequenceDelta, trace.outOfOrder, trace.duplicate
-            ).joinToString(",")
-            if (current.isNotEmpty() && current.length + line.length + 1 > TRACE_CHUNK_MAX_CHARS) {
-                chunks += current.toString()
-                current = StringBuilder()
-            }
-            if (current.isNotEmpty()) current.append(';')
-            current.append(line)
-        }
-        if (current.isNotEmpty()) chunks += current.toString()
-        sendTestControl("TRACE_BEGIN|$testId|${traces.size}|${chunks.size}")
-        chunks.forEachIndexed { index, chunk ->
-            sendTestControl("TRACE_CHUNK|$testId|$index|$chunk")
-        }
-        sendTestControl("TRACE_DONE|$testId")
-    }
-
-    fun getRemotePacketTrace(): List<NearbyPacketTrace> = synchronized(remotePacketTrace) { remotePacketTrace.toList() }
-
     fun sendRaw(bytes: ByteArray): Boolean {
         val endpoint = connectedEndpointId ?: return false
         client.sendPayload(endpoint, Payload.fromBytes(bytes))
@@ -468,12 +405,9 @@ class NearbyConnectionManager(private val context: Context) {
         incomingInterArrivalMs.clear()
         incomingSeenSequences.clear()
         incomingPacketTrace.clear()
+        _state.value = _state.value.copy(incomingPacketTraceRows = 0, receiverPacketTraceFileName = null)
         incomingReceiveOrder = 0L
         incomingMaxSequence = -1L
-        remotePacketTrace.clear()
-        remoteTraceTestId = null
-        remoteTraceExpectedChunks = 0
-        remoteTraceChunks.clear()
         resetLatencyTest()
     }
 

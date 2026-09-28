@@ -19,3 +19,7 @@ Nearby Connections → NearbyTransport → PacketProtocol → JitterBuffer
 2. Real Nearby jitter: 500 packets at 20 ms intervals, 80-byte payload, 40 ms target buffer and 200 ms maximum buffer.
 
 The unified CSV remains the single export buffer.
+
+
+Packet trace note
+- Packet-level trace is collected and retained on the receiving phone only. It is automatically saved under the receiver app's private packet-traces directory and can be exported directly from the receiver as a dedicated CSV. The transmitter no longer receives or stores packet traces.

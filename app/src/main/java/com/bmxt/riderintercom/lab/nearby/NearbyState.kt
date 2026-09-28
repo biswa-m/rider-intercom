@@ -12,5 +12,7 @@ data class NearbyState(
     val bytesSent: Long = 0,
     val bytesReceived: Long = 0,
     val packetsSent: Long = 0,
-    val packetsReceived: Long = 0
+    val packetsReceived: Long = 0,
+    val incomingPacketTraceRows: Int = 0,
+    val receiverPacketTraceFileName: String? = null
 )

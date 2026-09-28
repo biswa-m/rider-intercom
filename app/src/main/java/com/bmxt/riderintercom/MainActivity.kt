@@ -24,6 +24,7 @@ import com.bmxt.riderintercom.lab.nearby.NearbyConnectionManager
 import com.bmxt.riderintercom.lab.nearby.NearbyDataTestRunner
 import com.bmxt.riderintercom.lab.nearby.NearbyLifecycleTestRunner
 import com.bmxt.riderintercom.lab.nearby.NearbyLatencyTestRunner
+import com.bmxt.riderintercom.lab.nearby.NearbyPacketTraceCsvWriter
 import com.bmxt.riderintercom.lab.jitter.JitterBufferSimulationTestRunner
 import com.bmxt.riderintercom.lab.jitter.NearbyJitterBufferTestRunner
 import com.bmxt.riderintercom.lab.ui.screens.NearbyLabScreen
@@ -114,7 +115,6 @@ class MainActivity : ComponentActivity() {
                                     dataTesting = false
                                     dataProgress = "Finished"
                                 },
-                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunVoiceTest = {
@@ -129,7 +129,6 @@ class MainActivity : ComponentActivity() {
                                     dataTesting = false
                                     dataProgress = "Finished"
                                 },
-                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunRateSweep = {
@@ -144,7 +143,6 @@ class MainActivity : ComponentActivity() {
                                     dataTesting = false
                                     dataProgress = "Rate sweep finished"
                                 },
-                                onPacketTrace = { buffer.addPacketTraces(it) }
                             )
                         },
                         onRunLatencyTest = {
@@ -199,11 +197,20 @@ class MainActivity : ComponentActivity() {
                             )
                         },
                         onExport = { exportCsv(buffer.build(), buffer.defaultFileName(), "Export Unified CSV") },
+                        onExportReceiverTrace = {
+                            val traces = nearbyManager.getIncomingPacketTrace()
+                            exportCsv(
+                                NearbyPacketTraceCsvWriter.build(traces),
+                                NearbyPacketTraceCsvWriter.defaultFileName(),
+                                "Export Receiver Packet Trace CSV"
+                            )
+                        },
                         onReset = {
                             dataRunner.cancel()
                             lifecycleRunner.cancel()
                             latencyRunner.cancel()
                             nearbyJitterRunner.cancel()
+                            nearbyManager.resetCounters()
                             buffer.clear()
                             results = emptyList()
                             dataProgress = "Ready"

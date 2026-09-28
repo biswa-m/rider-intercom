@@ -17,29 +17,28 @@ class NearbyDataTestRunner {
         manager: NearbyConnectionManager,
         config: NearbyDataTestConfig,
         onUpdate: (String) -> Unit,
-        onComplete: (LabTestResult) -> Unit,
-        onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}
+        onComplete: (LabTestResult) -> Unit
     ) {
         cancel()
         job = CoroutineScope(Dispatchers.Default).launch {
-            val result = execute(manager, config, onUpdate, onPacketTrace)
+            val result = execute(manager, config, onUpdate)
             onComplete(result)
         }
     }
 
-    fun runStandard(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) =
-        run(manager, NearbyDataTestConfig("NEARBY_BYTES_10S_640B_50PPS", 640, 50), onUpdate, onComplete, onPacketTrace)
+    fun runStandard(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit) =
+        run(manager, NearbyDataTestConfig("NEARBY_BYTES_10S_640B_50PPS", 640, 50), onUpdate, onComplete)
 
-    fun runVoiceSized(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) =
-        run(manager, NearbyDataTestConfig("NEARBY_VOICE_SIZE_10S_80B_50PPS", 80, 50), onUpdate, onComplete, onPacketTrace)
+    fun runVoiceSized(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (LabTestResult) -> Unit) =
+        run(manager, NearbyDataTestConfig("NEARBY_VOICE_SIZE_10S_80B_50PPS", 80, 50), onUpdate, onComplete)
 
-    fun runRateSweep(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (List<LabTestResult>) -> Unit, onPacketTrace: (List<NearbyPacketTrace>) -> Unit = {}) {
+    fun runRateSweep(manager: NearbyConnectionManager, onUpdate: (String) -> Unit, onComplete: (List<LabTestResult>) -> Unit) {
         cancel()
         job = CoroutineScope(Dispatchers.Default).launch {
             val results = mutableListOf<LabTestResult>()
             for (rate in listOf(10, 25, 50, 100)) {
                 if (job?.isActive != true) break
-                val result = execute(manager, NearbyDataTestConfig("NEARBY_RATE_${rate}PPS_640B_10S", 640, rate), onUpdate, onPacketTrace)
+                val result = execute(manager, NearbyDataTestConfig("NEARBY_RATE_${rate}PPS_640B_10S", 640, rate), onUpdate)
                 results += result
                 delay(750L)
             }
@@ -50,8 +49,7 @@ class NearbyDataTestRunner {
     private suspend fun execute(
         manager: NearbyConnectionManager,
         config: NearbyDataTestConfig,
-        onUpdate: (String) -> Unit,
-        onPacketTrace: (List<NearbyPacketTrace>) -> Unit
+        onUpdate: (String) -> Unit
     ): LabTestResult {
         val testId = "${config.name}-${System.currentTimeMillis()}"
         val started = System.currentTimeMillis()
@@ -96,16 +94,12 @@ class NearbyDataTestRunner {
 
         delay(1_000L)
         val resultWait = manager.prepareTestSignal("RESULT|$testId")
-        val traceDoneWait = manager.prepareTestSignal("TRACE_DONE|$testId")
         if (!manager.sendTestControl("STOP|$testId|$sent")) {
             return failure(testStart, config, "Could not send STOP; senderTX=$sent")
         }
-        onUpdate("Transmission finished. Waiting for receiver result… Packet-level trace is being finalized.")
+        onUpdate("Transmission finished. Waiting for receiver result… Packet trace remains on receiver.")
         val resultMessage = withTimeoutOrNull(5_000L) { resultWait.await() }
             ?: return failure(testStart, config, "Timed out waiting for receiver RESULT; senderTX=$sent")
-        val traceReceived = withTimeoutOrNull(10_000L) { traceDoneWait.await() } != null
-        if (traceReceived) onPacketTrace(manager.getRemotePacketTrace())
-        else onUpdate("Receiver result received, but packet trace transfer timed out")
 
         val parts = resultMessage.split('|')
         val rx = parts.getOrNull(2)?.toLongOrNull() ?: 0L
