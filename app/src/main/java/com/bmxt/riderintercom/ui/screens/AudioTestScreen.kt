@@ -20,6 +20,7 @@ import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -60,6 +61,10 @@ fun AudioTestScreen(
     onSetUseOpus: (Boolean) -> Unit,
     onSetUseJitterBuffer: (Boolean) -> Unit,
     onSetUseVadPreRoll: (Boolean) -> Unit,
+    onSetUseTimestampLatencyTest: (Boolean) -> Unit,
+    onSetLatencyClockOffsetMs: (Long) -> Unit,
+    onSetLatencySampleEveryPackets: (Int) -> Unit,
+    onApplyPingPongClockOffset: () -> Unit,
     onResetFeatureConfig: () -> Unit,
     pingPongState: PingPongTestManager.State,
     onStartPingPong: (String) -> Unit,
@@ -69,6 +74,15 @@ fun AudioTestScreen(
     onStop: () -> Unit
 ) {
     var peerHost by remember { mutableStateOf("") }
+    var latencyOffsetText by remember { mutableStateOf(featureConfig.latencyClockOffsetMs.toString()) }
+    var latencySampleEveryText by remember { mutableStateOf(featureConfig.latencySampleEveryPackets.toString()) }
+
+    LaunchedEffect(featureConfig.latencyClockOffsetMs) {
+        latencyOffsetText = featureConfig.latencyClockOffsetMs.toString()
+    }
+    LaunchedEffect(featureConfig.latencySampleEveryPackets) {
+        latencySampleEveryText = featureConfig.latencySampleEveryPackets.toString()
+    }
 
     LazyColumn(
         modifier = Modifier.fillMaxSize().padding(24.dp),
@@ -142,6 +156,59 @@ fun AudioTestScreen(
                 enabled = !audioRunning && featureConfig.useVad,
                 onCheckedChange = onSetUseVadPreRoll
             )
+
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Timestamp latency test (testing only)", style = MaterialTheme.typography.titleSmall)
+            Text(
+                "Voice packets already carry a sender timestamp. When enabled, " +
+                    "the receiver measures timestamp → AudioTrack.write start. " +
+                    "It does not change the audio pipeline."
+            )
+            FeatureSwitchRow(
+                title = "Enable latency measurement",
+                description = "Keep OFF for normal intercom testing.",
+                checked = featureConfig.useTimestampLatencyTest,
+                enabled = !audioRunning,
+                onCheckedChange = onSetUseTimestampLatencyTest
+            )
+            OutlinedTextField(
+                value = latencyOffsetText,
+                onValueChange = { value ->
+                    latencyOffsetText = value
+                    value.toLongOrNull()?.let(onSetLatencyClockOffsetMs)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Peer clock offset (peer − this phone), ms") },
+                placeholder = { Text("Example: -364") },
+                singleLine = true,
+                enabled = !audioRunning,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Text)
+            )
+            Button(
+                onClick = onApplyPingPongClockOffset,
+                enabled = !audioRunning && pingPongState.clockOffsetMs != null,
+                modifier = Modifier.fillMaxWidth()
+            ) {
+                Text(
+                    pingPongState.clockOffsetMs?.let {
+                        "Use ping-pong offset ($it ms)"
+                    } ?: "Run ping-pong test first"
+                )
+            }
+            OutlinedTextField(
+                value = latencySampleEveryText,
+                onValueChange = { value ->
+                    latencySampleEveryText = value
+                    value.toIntOrNull()?.let(onSetLatencySampleEveryPackets)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                label = { Text("Measure every Nth playback packet") },
+                placeholder = { Text("1 = every packet") },
+                singleLine = true,
+                enabled = !audioRunning,
+                keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Number)
+            )
+
             Button(
                 onClick = onResetFeatureConfig,
                 enabled = !audioRunning
@@ -162,6 +229,19 @@ fun AudioTestScreen(
             Text("Malformed UDP: ${debugState.malformedPackets}")
             Text("Last TX payload: ${debugState.lastSentPayloadBytes} B")
             Text("Last RX payload: ${debugState.lastReceivedPayloadBytes} B, seq=${debugState.lastReceivedSequence}")
+            if (debugState.latencyTestEnabled) {
+                Text(
+                    "Timestamp latency: samples ${debugState.latencySamples} | " +
+                        "last ${debugState.latencyLastMs ?: "-"} ms | " +
+                        "avg ${debugState.latencyAvgMs ?: "-"} ms"
+                )
+                Text(
+                    "Latency min ${debugState.latencyMinMs ?: "-"} ms | " +
+                        "P95 ${debugState.latencyP95Ms ?: "-"} ms | " +
+                        "max ${debugState.latencyMaxMs ?: "-"} ms"
+                )
+                Text("Clock offset used: ${debugState.latencyClockOffsetMs} ms")
+            }
             if (featureConfig.effectiveJitterBuffer) {
                 Text("Jitter buffer: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets} (target ${debugState.jitterTargetPackets})")
                 Text("Estimated lost: ${debugState.estimatedLostPackets}   Late: ${debugState.latePackets}   Overflow drop: ${debugState.overflowDroppedPackets}")

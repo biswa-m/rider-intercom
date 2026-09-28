@@ -43,5 +43,16 @@ data class AudioDebugState(
     val playbackChannelCount: Int = 0,
     val opusEncoderName: String = "Not started",
     val opusDecoderName: String = "Not started",
+
+    // Testing-only timestamp latency measurement.
+    val latencyTestEnabled: Boolean = false,
+    val latencyClockOffsetMs: Long = 0L,
+    val latencySamples: Long = 0L,
+    val latencyLastMs: Long? = null,
+    val latencyAvgMs: Long? = null,
+    val latencyMinMs: Long? = null,
+    val latencyP95Ms: Long? = null,
+    val latencyMaxMs: Long? = null,
+
     val lastError: String? = null
 )

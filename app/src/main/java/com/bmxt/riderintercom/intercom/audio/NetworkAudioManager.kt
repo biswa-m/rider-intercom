@@ -78,7 +78,8 @@ class NetworkAudioManager(
     private data class DecodedPcmFrame(
         val samples: ShortArray,
         val sampleRate: Int,
-        val channelCount: Int
+        val channelCount: Int,
+        val sentAtMs: Long
     )
 
     private val decodedPcmQueue = ArrayDeque<DecodedPcmFrame>(DECODED_PCM_QUEUE_MAX)
@@ -106,6 +107,10 @@ class NetworkAudioManager(
     private val playbackSamples = AtomicLong(0)
     private val playbackWriteFailures = AtomicLong(0)
     private val playbackUnderruns = AtomicLong(0)
+
+    private val latencyPacketsSeen = AtomicLong(0)
+    private val latencySamplesCount = AtomicLong(0)
+    private val latencyValues = ArrayDeque<Long>(200)
 
     @Volatile private var micLevelDb = -96f
     @Volatile private var remoteLevelDb = -96f
@@ -345,6 +350,11 @@ class NetworkAudioManager(
     }
 
     private fun sendAudioFrame(frame: ShortArray) {
+        // Timestamp the frame at the capture/send boundary. This is used only
+        // by the testing-only latency measurement and is carried in every
+        // voice packet regardless of whether the measurement is enabled.
+        val sentAtMs = System.currentTimeMillis()
+
         val bytes = try {
             if (config.useOpus) {
                 val opusData = encoder?.encode(frame)
@@ -356,7 +366,8 @@ class NetworkAudioManager(
                 encodedFrames.incrementAndGet()
                 val sentBytes = transport?.sendOpus(
                     sampleCount = frame.size,
-                    opusData = opusData
+                    opusData = opusData,
+                    sentAtMs = sentAtMs
                 ) ?: 0
 
                 if (sentBytes > 0) {
@@ -365,7 +376,10 @@ class NetworkAudioManager(
 
                 sentBytes
             } else {
-                val sentBytes = transport?.sendPcm(frame) ?: 0
+                val sentBytes = transport?.sendPcm(
+                    samples = frame,
+                    sentAtMs = sentAtMs
+                ) ?: 0
                 if (sentBytes > 0) {
                     lastSentPayloadBytes = frame.size * 2
                 }
@@ -451,7 +465,8 @@ class NetworkAudioManager(
                                 DecodedPcmFrame(
                                     samples = decoded.samples,
                                     sampleRate = decoded.sampleRate,
-                                    channelCount = decoded.channelCount
+                                    channelCount = decoded.channelCount,
+                                    sentAtMs = packet.packet.sentAtMs
                                 )
                             )
                         }
@@ -518,6 +533,8 @@ class NetworkAudioManager(
             channelCount = frame.channelCount
         ) ?: return false
 
+        recordPlaybackLatency(frame.sentAtMs)
+
         val written = track.write(
             frame.samples,
             0,
@@ -552,7 +569,7 @@ class NetworkAudioManager(
 
                 waitingForPacket = false
                 val played = when (packet) {
-                    is DirectRxPacket.Pcm -> playPcm(packet.packet.samples)
+                    is DirectRxPacket.Pcm -> playPcm(packet.packet.samples, packet.packet.sentAtMs)
                     is DirectRxPacket.Opus -> playOpus(packet.packet)
                 }
 
@@ -664,6 +681,8 @@ class NetworkAudioManager(
                 channelCount = decoded.channelCount
             ) ?: continue
 
+            recordPlaybackLatency(packet.sentAtMs)
+
             val written = trackInstance.write(
                 decoded.samples,
                 0,
@@ -683,7 +702,7 @@ class NetworkAudioManager(
         return wroteAny
     }
 
-    private fun playPcm(samples: ShortArray): Boolean {
+    private fun playPcm(samples: ShortArray, sentAtMs: Long): Boolean {
         if (samples.isEmpty()) return false
 
         remoteLevelDb = AudioLevelUtils.rmsDb(samples)
@@ -691,6 +710,8 @@ class NetworkAudioManager(
             sampleRate = SAMPLE_RATE,
             channelCount = 1
         ) ?: return false
+
+        recordPlaybackLatency(sentAtMs)
 
         val written = track.write(
             samples,
@@ -842,6 +863,35 @@ class NetworkAudioManager(
         }
     }
 
+    /**
+     * Measures timestamp -> AudioTrack write-start latency. The timestamp is
+     * generated on the sender at the capture/send boundary. Because the phones
+     * have different system clocks, the configured offset (peer - this phone)
+     * is added when converting the sender timestamp into this phone's clock.
+     *
+     * This is intentionally a diagnostics-only path and is disabled by default.
+     */
+    private fun recordPlaybackLatency(sentAtMs: Long) {
+        if (!config.useTimestampLatencyTest || sentAtMs <= 0L) return
+
+        val packetNumber = latencyPacketsSeen.incrementAndGet()
+        if ((packetNumber - 1L) % config.effectiveLatencySampleEveryPackets.toLong() != 0L) {
+            return
+        }
+
+        val latencyMs =
+            (System.currentTimeMillis() - sentAtMs + config.latencyClockOffsetMs)
+                .coerceIn(-10_000L, 10_000L)
+
+        synchronized(latencyValues) {
+            if (latencyValues.size >= 200) {
+                latencyValues.removeFirst()
+            }
+            latencyValues.addLast(latencyMs)
+        }
+        latencySamplesCount.incrementAndGet()
+    }
+
     private fun modeLabel(): String = when {
         config.useOpus && config.effectiveJitterBuffer && config.useVad -> "VAD/Opus/jitter"
         config.useOpus && config.effectiveJitterBuffer -> "Opus/jitter"
@@ -864,6 +914,11 @@ class NetworkAudioManager(
         playbackSamples.set(0)
         playbackWriteFailures.set(0)
         playbackUnderruns.set(0)
+        latencyPacketsSeen.set(0)
+        latencySamplesCount.set(0)
+        synchronized(latencyValues) {
+            latencyValues.clear()
+        }
         synchronized(decodedPcmQueueLock) {
             decodedPcmDropped = 0L
         }
@@ -899,6 +954,7 @@ class NetworkAudioManager(
         val queueDepth = synchronized(directRxQueueLock) { directRxQueue.size }
         val decodedQueueDropped = synchronized(decodedPcmQueueLock) { decodedPcmDropped }
         val decodedQueueDepth = synchronized(decodedPcmQueueLock) { decodedPcmQueue.size }
+        val latencySnapshot = synchronized(latencyValues) { latencyValues.toList() }
 
         _debugState.update {
             it.copy(
@@ -940,6 +996,14 @@ class NetworkAudioManager(
                 playbackChannelCount = playbackChannelCount,
                 opusEncoderName = encoder?.codecName ?: if (config.useOpus) "Not started" else "Disabled",
                 opusDecoderName = decoder?.codecName ?: if (config.useOpus) "Not started" else "Disabled",
+                latencyTestEnabled = config.useTimestampLatencyTest,
+                latencyClockOffsetMs = config.latencyClockOffsetMs,
+                latencySamples = latencySamplesCount.get(),
+                latencyLastMs = latencySnapshot.lastOrNull(),
+                latencyAvgMs = if (latencySnapshot.isNotEmpty()) latencySnapshot.average().toLong() else null,
+                latencyMinMs = latencySnapshot.minOrNull(),
+                latencyP95Ms = percentile(latencySnapshot, 0.95),
+                latencyMaxMs = latencySnapshot.maxOrNull(),
                 lastError = lastError
             )
         }
@@ -956,6 +1020,14 @@ class NetworkAudioManager(
         AudioTrack.PLAYSTATE_PAUSED -> "PAUSED"
         AudioTrack.PLAYSTATE_STOPPED -> "STOPPED"
         else -> "UNKNOWN($value)"
+    }
+
+    private fun percentile(values: Collection<Long>, p: Double): Long? {
+        if (values.isEmpty()) return null
+        val sorted = values.sorted()
+        val clamped = p.coerceIn(0.0, 1.0)
+        val index = ((sorted.size - 1) * clamped).toInt()
+        return sorted[index]
     }
 
     fun stop() {

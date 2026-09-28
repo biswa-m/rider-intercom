@@ -80,6 +80,26 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _featureConfig.update { it.copy(useVadPreRoll = enabled) }
     }
 
+    fun setUseTimestampLatencyTest(enabled: Boolean) {
+        _featureConfig.update { it.copy(useTimestampLatencyTest = enabled) }
+    }
+
+    fun setLatencyClockOffsetMs(offsetMs: Long) {
+        _featureConfig.update { it.copy(latencyClockOffsetMs = offsetMs) }
+    }
+
+    fun setLatencySampleEveryPackets(value: Int) {
+        _featureConfig.update {
+            it.copy(latencySampleEveryPackets = value.coerceIn(1, 100))
+        }
+    }
+
+    fun applyPingPongClockOffset() {
+        pingPongTestManager.state.value.clockOffsetMs?.let { offset ->
+            setLatencyClockOffsetMs(offset)
+        }
+    }
+
     fun resetFeatureConfig() {
         _featureConfig.value = IntercomFeatureConfig.default()
     }

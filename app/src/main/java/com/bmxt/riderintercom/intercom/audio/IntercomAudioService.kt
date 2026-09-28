@@ -81,6 +81,18 @@ class IntercomAudioService : Service() {
                 putExtra(IntercomFeatureConfig.EXTRA_USE_OPUS, featureConfig.useOpus)
                 putExtra(IntercomFeatureConfig.EXTRA_USE_JITTER_BUFFER, featureConfig.useJitterBuffer)
                 putExtra(IntercomFeatureConfig.EXTRA_USE_VAD_PRE_ROLL, featureConfig.useVadPreRoll)
+                putExtra(
+                    IntercomFeatureConfig.EXTRA_USE_TIMESTAMP_LATENCY_TEST,
+                    featureConfig.useTimestampLatencyTest
+                )
+                putExtra(
+                    IntercomFeatureConfig.EXTRA_LATENCY_CLOCK_OFFSET_MS,
+                    featureConfig.latencyClockOffsetMs
+                )
+                putExtra(
+                    IntercomFeatureConfig.EXTRA_LATENCY_SAMPLE_EVERY_PACKETS,
+                    featureConfig.latencySampleEveryPackets
+                )
             }
 
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {

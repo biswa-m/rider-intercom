@@ -54,20 +54,27 @@ class UdpVoiceTransport(
     }
 
     /** Returns the number of bytes sent, or 0 on failure. */
-    fun sendPcm(samples: ShortArray): Int {
+    fun sendPcm(
+        samples: ShortArray,
+        sentAtMs: Long = System.currentTimeMillis()
+    ): Int {
         val payload = PcmVoicePacket.encode(
             sequence = sequence.incrementAndGet(),
-            sentAtMs = System.currentTimeMillis(),
+            sentAtMs = sentAtMs,
             samples = samples
         )
         return sendDatagram(payload)
     }
 
     /** Returns the number of bytes sent, or 0 on failure. */
-    fun sendOpus(sampleCount: Int, opusData: ByteArray): Int {
+    fun sendOpus(
+        sampleCount: Int,
+        opusData: ByteArray,
+        sentAtMs: Long = System.currentTimeMillis()
+    ): Int {
         val payload = OpusVoicePacket.encode(
             sequence = sequence.incrementAndGet(),
-            sentAtMs = System.currentTimeMillis(),
+            sentAtMs = sentAtMs,
             sampleCount = sampleCount,
             payload = opusData
         )
