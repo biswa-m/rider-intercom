@@ -57,6 +57,7 @@ class UdpVoiceTransport(
     fun sendPcm(samples: ShortArray): Int {
         val payload = PcmVoicePacket.encode(
             sequence = sequence.incrementAndGet(),
+            sentAtMs = System.currentTimeMillis(),
             samples = samples
         )
         return sendDatagram(payload)
@@ -66,6 +67,7 @@ class UdpVoiceTransport(
     fun sendOpus(sampleCount: Int, opusData: ByteArray): Int {
         val payload = OpusVoicePacket.encode(
             sequence = sequence.incrementAndGet(),
+            sentAtMs = System.currentTimeMillis(),
             sampleCount = sampleCount,
             payload = opusData
         )

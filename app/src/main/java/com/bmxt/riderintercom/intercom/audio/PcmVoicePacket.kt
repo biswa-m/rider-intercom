@@ -11,14 +11,15 @@ import java.nio.ByteOrder
  */
 data class PcmVoicePacket(
     val sequence: Int,
+    val sentAtMs: Long,
     val samples: ShortArray
 ) {
     companion object {
         private const val MAGIC = 0x5249 // "RI"
-        private const val VERSION: Byte = 1
-        private const val HEADER_SIZE = 12
+        private const val VERSION: Byte = 2
+        private const val HEADER_SIZE = 20
 
-        fun encode(sequence: Int, samples: ShortArray): ByteArray {
+        fun encode(sequence: Int, sentAtMs: Long, samples: ShortArray): ByteArray {
             val payloadBytes = samples.size * 2
             val buffer = ByteBuffer
                 .allocate(HEADER_SIZE + payloadBytes)
@@ -28,6 +29,7 @@ data class PcmVoicePacket(
             buffer.put(VERSION)
             buffer.put(0) // packet type: PCM voice
             buffer.putInt(sequence)
+            buffer.putLong(sentAtMs)
             buffer.putShort(samples.size.toShort())
             buffer.putShort(payloadBytes.toShort())
 
@@ -50,6 +52,7 @@ data class PcmVoicePacket(
 
             buffer.get() // packet type
             val sequence = buffer.int
+            val sentAtMs = buffer.long
             val sampleCount = buffer.short.toInt() and 0xFFFF
             val payloadBytes = buffer.short.toInt() and 0xFFFF
 
@@ -66,7 +69,7 @@ data class PcmVoicePacket(
                 samples[i] = buffer.short
             }
 
-            return PcmVoicePacket(sequence, samples)
+            return PcmVoicePacket(sequence, sentAtMs, samples)
         }
     }
 }

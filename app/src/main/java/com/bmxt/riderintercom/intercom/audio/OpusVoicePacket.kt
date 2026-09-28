@@ -5,16 +5,17 @@ import java.nio.ByteOrder
 
 data class OpusVoicePacket(
     val sequence: Int,
+    val sentAtMs: Long,
     val sampleCount: Int,
     val payload: ByteArray
 ) {
     companion object {
         private const val MAGIC = 0x5249
-        private const val VERSION: Byte = 2
+        private const val VERSION: Byte = 3
         private const val TYPE_OPUS: Byte = 1
-        private const val HEADER_SIZE = 12
+        private const val HEADER_SIZE = 20
 
-        fun encode(sequence: Int, sampleCount: Int, payload: ByteArray): ByteArray {
+        fun encode(sequence: Int, sentAtMs: Long, sampleCount: Int, payload: ByteArray): ByteArray {
             require(sampleCount > 0)
             require(payload.isNotEmpty())
             require(payload.size <= 0xFFFF)
@@ -27,6 +28,7 @@ data class OpusVoicePacket(
                     put(VERSION)
                     put(TYPE_OPUS)
                     putInt(sequence)
+                    putLong(sentAtMs)
                     putShort(sampleCount.toShort())
                     putShort(payload.size.toShort())
                     put(payload)
@@ -43,6 +45,7 @@ data class OpusVoicePacket(
             if (buffer.get() != TYPE_OPUS) return null
 
             val sequence = buffer.int
+            val sentAtMs = buffer.long
             val sampleCount = buffer.short.toInt() and 0xFFFF
             val payloadBytes = buffer.short.toInt() and 0xFFFF
 
@@ -51,7 +54,7 @@ data class OpusVoicePacket(
 
             val payload = ByteArray(payloadBytes)
             buffer.get(payload)
-            return OpusVoicePacket(sequence, sampleCount, payload)
+            return OpusVoicePacket(sequence, sentAtMs, sampleCount, payload)
         }
     }
 }

@@ -165,12 +165,23 @@ fun AudioTestScreen(
                 Text("Jitter buffer: OFF")
                 Text("Direct RX queue: ${debugState.jitterBufferedPackets}/${debugState.jitterMaxPackets}   Dropped: ${debugState.overflowDroppedPackets}")
                 if (featureConfig.useOpus) {
-                    Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/4   Dropped: ${debugState.decodedPcmQueueDropped}")
+                    Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/6   Dropped: ${debugState.decodedPcmQueueDropped}")
                 }
             }
             if (featureConfig.useOpus && featureConfig.effectiveJitterBuffer) {
-                Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/4   Dropped: ${debugState.decodedPcmQueueDropped}")
+                Text("Decoded PCM queue: ${debugState.decodedPcmQueueDepth}/6   Dropped: ${debugState.decodedPcmQueueDropped}")
             }
+            Spacer(modifier = Modifier.height(8.dp))
+            Text("Estimated voice latency", style = MaterialTheme.typography.titleSmall)
+            if (debugState.latencySamples > 0) {
+                Text("Last: ${debugState.latencyLastMs} ms   Avg: ${debugState.latencyAvgMs} ms")
+                Text("Min: ${debugState.latencyMinMs} ms   P95: ${debugState.latencyP95Ms} ms   Max: ${debugState.latencyMaxMs} ms")
+                Text("Samples: ${debugState.latencySamples} (measured at AudioTrack write)")
+                Text("Note: absolute value includes phone clock offset/skew between devices.")
+            } else {
+                Text("Waiting for received audio...")
+            }
+
             Text("Playback samples: ${debugState.playbackSamples}")
             Text("Playback write failures: ${debugState.playbackWriteFailures}")
             Text("AudioRecord: ${debugState.audioRecordState}   AudioTrack: ${debugState.audioTrackState}")

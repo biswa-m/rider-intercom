@@ -78,6 +78,7 @@ class NetworkAudioManager(
     private data class DecodedPcmFrame(
         val samples: ShortArray,
         val sampleRate: Int,
+        val sentAtMs: Long,
         val channelCount: Int
     )
 
@@ -119,6 +120,8 @@ class NetworkAudioManager(
     @Volatile private var lastDebugEmitMs = 0L
     @Volatile private var playbackSampleRate = 0
     @Volatile private var playbackChannelCount = 0
+    private val latencySamples = ArrayDeque<Long>(200)
+    private val latencyLock = Any()
 
     fun start(
         scope: CoroutineScope,
@@ -451,7 +454,8 @@ class NetworkAudioManager(
                                 DecodedPcmFrame(
                                     samples = decoded.samples,
                                     sampleRate = decoded.sampleRate,
-                                    channelCount = decoded.channelCount
+                                    channelCount = decoded.channelCount,
+                                    sentAtMs = packet.packet.sentAtMs
                                 )
                             )
                         }
@@ -528,6 +532,7 @@ class NetworkAudioManager(
         if (written > 0) {
             decodedFrames.incrementAndGet()
             playbackSamples.addAndGet(written.toLong())
+            recordLatency(frame.sentAtMs)
             return true
         }
 
@@ -552,7 +557,7 @@ class NetworkAudioManager(
 
                 waitingForPacket = false
                 val played = when (packet) {
-                    is DirectRxPacket.Pcm -> playPcm(packet.packet.samples)
+                    is DirectRxPacket.Pcm -> playPcm(packet.packet.samples, packet.packet.sentAtMs)
                     is DirectRxPacket.Opus -> playOpus(packet.packet)
                 }
 
@@ -674,6 +679,7 @@ class NetworkAudioManager(
             if (written > 0) {
                 this@NetworkAudioManager.decodedFrames.incrementAndGet()
                 playbackSamples.addAndGet(written.toLong())
+                recordLatency(packet.sentAtMs)
                 wroteAny = true
             } else {
                 playbackWriteFailures.incrementAndGet()
@@ -683,7 +689,7 @@ class NetworkAudioManager(
         return wroteAny
     }
 
-    private fun playPcm(samples: ShortArray): Boolean {
+    private fun playPcm(samples: ShortArray, packetSentAtMs: Long = -1L): Boolean {
         if (samples.isEmpty()) return false
 
         remoteLevelDb = AudioLevelUtils.rmsDb(samples)
@@ -701,6 +707,7 @@ class NetworkAudioManager(
 
         if (written > 0) {
             playbackSamples.addAndGet(written.toLong())
+            recordLatency(packetSentAtMs)
             return true
         }
 
@@ -878,7 +885,23 @@ class NetworkAudioManager(
         lastDebugEmitMs = 0L
         playbackSampleRate = 0
         playbackChannelCount = 0
+        synchronized(latencyLock) { latencySamples.clear() }
         _debugState.value = AudioDebugState()
+    }
+
+    private fun recordLatency(sentAtMs: Long) {
+        if (sentAtMs <= 0L) return
+        val latency = System.currentTimeMillis() - sentAtMs
+        if (latency < 0L || latency > 10_000L) return
+        synchronized(latencyLock) {
+            if (latencySamples.size >= 200) latencySamples.removeFirst()
+            latencySamples.addLast(latency)
+        }
+        publishDebug()
+    }
+
+    private fun latencySnapshot(): LongArray = synchronized(latencyLock) {
+        latencySamples.toList().toLongArray()
     }
 
     private fun setError(message: String) {
@@ -899,6 +922,15 @@ class NetworkAudioManager(
         val queueDepth = synchronized(directRxQueueLock) { directRxQueue.size }
         val decodedQueueDropped = synchronized(decodedPcmQueueLock) { decodedPcmDropped }
         val decodedQueueDepth = synchronized(decodedPcmQueueLock) { decodedPcmQueue.size }
+        val latency = latencySnapshot()
+        val latencySorted = latency.sorted()
+        val latencyMin = latencySorted.firstOrNull() ?: -1L
+        val latencyMax = latencySorted.lastOrNull() ?: -1L
+        val latencyAvg = if (latency.isNotEmpty()) latency.average().toLong() else -1L
+        val latencyP95 = if (latencySorted.isNotEmpty()) {
+            latencySorted[((latencySorted.size - 1) * 0.95).toInt()]
+        } else -1L
+        val latencyLast = latency.lastOrNull() ?: -1L
 
         _debugState.update {
             it.copy(
@@ -934,6 +966,12 @@ class NetworkAudioManager(
                 decodedPcmQueueDropped = decodedQueueDropped,
                 jitterResyncs = if (config.effectiveJitterBuffer) jitter.resyncCount else 0L,
                 playbackUnderruns = playbackUnderruns.get(),
+                latencyLastMs = latencyLast,
+                latencyMinMs = latencyMin,
+                latencyMaxMs = latencyMax,
+                latencyAvgMs = latencyAvg,
+                latencyP95Ms = latencyP95,
+                latencySamples = latency.size.toLong(),
                 audioRecordState = audioRecord?.recordingState?.let(::recordStateName) ?: "Null",
                 audioTrackState = audioTrack?.playState?.let(::playStateName) ?: "Null",
                 playbackSampleRate = playbackSampleRate,
