@@ -20,6 +20,8 @@ import com.google.android.gms.nearby.connection.Strategy
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
+import com.bmxt.riderintercom.lab.transport.PayloadListener
+import com.bmxt.riderintercom.lab.transport.PayloadListenerRegistry
 
 class NearbyConnectionManager(private val context: Context) {
     companion object {
@@ -56,6 +58,7 @@ class NearbyConnectionManager(private val context: Context) {
     private var latencyRx = 0L
     private val latencySamplesMs = mutableListOf<Double>()
     private val testSignals = java.util.concurrent.ConcurrentHashMap<String, kotlinx.coroutines.CompletableDeferred<String>>()
+    private val payloadListeners = PayloadListenerRegistry()
 
     private val payloadCallback = object : PayloadCallback() {
         override fun onPayloadReceived(endpointId: String, payload: Payload) {
@@ -66,6 +69,7 @@ class NearbyConnectionManager(private val context: Context) {
                 handleTestControl(text.removePrefix("RITC|"))
                 return
             }
+            payloadListeners.dispatch(endpointId, bytes, System.nanoTime())
             if (latencyTestActive && bytes.size >= 16 && bytes.copyOfRange(0, 4).contentEquals(byteArrayOf('R'.code.toByte(), 'I'.code.toByte(), 'T'.code.toByte(), 'L'.code.toByte()))) {
                 val buffer = ByteBuffer.wrap(bytes).order(ByteOrder.BIG_ENDIAN)
                 buffer.position(4)
@@ -200,6 +204,18 @@ class NearbyConnectionManager(private val context: Context) {
         client.stopAllEndpoints()
         connectedEndpointId = null
         _state.value = _state.value.copy(status = NearbyConnectionStatus.DISCONNECTED, connectedPeer = null, lastEvent = "Manual disconnect")
+    }
+
+    /**
+     * Registers a generic payload consumer at the Nearby callback boundary.
+     * Existing test handling remains unchanged.
+     */
+    fun addPayloadListener(owner: Any, listener: PayloadListener) {
+        payloadListeners.add(owner, listener)
+    }
+
+    fun removePayloadListener(owner: Any) {
+        payloadListeners.remove(owner)
     }
 
     fun send(bytes: ByteArray): Boolean {
