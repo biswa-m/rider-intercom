@@ -4,6 +4,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.net.DatagramPacket
@@ -139,7 +140,7 @@ class PingPongTestManager {
 
         try {
             val buffer = ByteArray(128)
-            while (isActive && !completed) {
+            while (currentCoroutineContext().isActive && !completed) {
                 val now = System.currentTimeMillis()
                 if (_state.value.localSamples >= REQUIRED_SAMPLES) {
                     if (!completed) {
@@ -261,7 +262,7 @@ class PingPongTestManager {
         t3: Long,
         packetSessionId: Long = sessionId
     ) {
-        val data = ByteBuffer.allocate(36).order(ByteOrder.BIG_ENDIAN).apply {
+        val data = ByteBuffer.allocate(40).order(ByteOrder.BIG_ENDIAN).apply {
             putShort(MAGIC.toShort())
             put(VERSION)
             put(type)
@@ -284,7 +285,7 @@ class PingPongTestManager {
     )
 
     private fun decode(data: ByteArray, length: Int): Packet? {
-        if (length < 36) return null
+        if (length < 40) return null
         val b = ByteBuffer.wrap(data, 0, length).order(ByteOrder.BIG_ENDIAN)
         if ((b.short.toInt() and 0xFFFF) != MAGIC) return null
         if (b.get() != VERSION) return null
